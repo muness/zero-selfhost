@@ -48,7 +48,7 @@ export default function ShortcutsPage() {
           }, {}),
         ).map(([scope, scopedShortcuts]) => (
           <div key={scope} className="space-y-2">
-            <h3 className="text-muted-foreground px-1 text-[11px] font-medium tracking-wide uppercase">
+            <h3 className="text-muted-foreground px-1 text-[11px] font-medium uppercase tracking-wide">
               {scope.split('-').join(' ')}
             </h3>
             <SettingsGroup>
@@ -68,7 +68,7 @@ export default function ShortcutsPage() {
                   `pages.settings.shortcuts.actions.${shortcut.action}`,
                 );
                 const actionLabel =
-                  typeof translation === 'function' ? String(translation()) : shortcut.action;
+                  typeof translation === 'function' ? String(translation()) : shortcut.description;
 
                 if (shortcut.action in categoryActionIndex && categorySettings.length) {
                   const idx = categoryActionIndex[shortcut.action];

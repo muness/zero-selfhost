@@ -6,7 +6,6 @@ import { ExclamationCircle, GroupPeople, PencilCompose } from '../icons/icons';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useOptimisticThreadState } from './optimistic-thread-state';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useLoading } from '@/components/context/loading-context';
 import { ThreadDisplay } from '@/components/mail/thread-display';
 import { PricingDialog } from '@/components/ui/pricing-dialog';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -80,7 +79,7 @@ export function UnifiedInboxLayout() {
   return (
     <TooltipProvider delayDuration={0}>
       <PricingDialog />
-      <div className="rounded-inherit relative z-5 flex p-0 md:mr-0.5">
+      <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5">
         <ResizablePanelGroup
           direction="horizontal"
           className={cn('rounded-inherit relative overflow-hidden', threadId && 'bg-sidebar')}
@@ -127,10 +126,9 @@ export function UnifiedInboxLayout() {
 function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { setLoading } = useLoading();
   const { data: activeConnection } = useActiveConnection();
   const { data: settingsData } = useSettings();
-  const { optimisticMarkAsRead } = useOptimisticActions();
+  const { optimisticMarkAsRead, optimisticMoveThreadsTo } = useOptimisticActions();
   const [threadId, setThreadId] = useQueryState('threadId');
   const [, setDraftId] = useQueryState('draftId');
   const [, setMode] = useQueryState('mode');
@@ -167,26 +165,35 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     async (thread: UnifiedThread) => {
       if (isSwitchingRef.current) return;
       const autoRead = settingsData?.settings?.autoRead ?? true;
-      const needsSwitch = !!activeConnection?.id && thread.connectionId !== activeConnection.id;
+      const needsSwitch = thread.connectionId !== activeConnection?.id;
 
       if (needsSwitch) {
         isSwitchingRef.current = true;
         try {
-          setLoading(true, m['common.navUser.switchingAccounts']());
-          setThreadId(null);
-          await setDefaultConnection({ connectionId: thread.connectionId });
-          const unifiedKey = JSON.stringify(trpc.mail.listUnifiedInbox.pathKey()[0]);
-          const notUnified = (q: { queryKey: readonly unknown[] }) =>
-            JSON.stringify(q.queryKey[0]) !== unifiedKey;
-          await queryClient.cancelQueries({ predicate: notUnified });
-          await queryClient.resetQueries({ predicate: notUnified });
+          const defaultKey = trpc.connections.getDefault.queryKey();
+          const accountData = {
+            predicate: ({ queryKey }: { queryKey: readonly unknown[] }) => {
+              const path = queryKey[0];
+              if (!Array.isArray(path)) return false;
+              if (path[0] === 'mail') return path[1] !== 'listUnifiedInbox';
+              return ['drafts', 'labels', 'search'].includes(path[0]);
+            },
+          };
+          await Promise.all([
+            queryClient.cancelQueries({ queryKey: defaultKey, exact: true }),
+            queryClient.cancelQueries(accountData),
+          ]);
+          const account = await setDefaultConnection({ connectionId: thread.connectionId });
+          queryClient.setQueryData(defaultKey, account);
+          // Clear previous-account data immediately; network refetches can finish in parallel
+          // with the newly opened thread.
+          void queryClient.resetQueries(accountData);
         } catch (error) {
           console.error('[UnifiedInbox] Failed to switch account', error);
           toast.error(m['common.navUser.failedToSwitchAccount']());
           return;
         } finally {
           isSwitchingRef.current = false;
-          setLoading(false);
         }
       }
 
@@ -199,7 +206,6 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     [
       activeConnection?.id,
       settingsData,
-      setLoading,
       setThreadId,
       setDefaultConnection,
       trpc,
@@ -228,7 +234,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="sticky top-0 z-15 flex items-center justify-between gap-1.5 p-2 pb-0">
+      <div className="z-15 sticky top-0 flex items-center justify-between gap-1.5 p-2 pb-0">
         <div className="w-full">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 md:grid md:grid-cols-[1fr_auto_1fr]">
             <ZenNavigation />
@@ -255,7 +261,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
         </div>
       </div>
 
-      <div className="relative z-1 flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+      <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
         {isLoading ? (
           <div className="flex flex-col">
             {Array.from({ length: 8 }, (_, i) => (
@@ -295,6 +301,9 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
                   }
                   isDesktop={isDesktop}
                   onOpen={openThread}
+                  onTrash={(thread) =>
+                    optimisticMoveThreadsTo([thread.id], 'inbox', 'bin', thread.connectionId)
+                  }
                 />
               );
             }}
@@ -348,6 +357,7 @@ type UnifiedThreadRowProps = {
   isSelected: boolean;
   isDesktop: boolean;
   onOpen: (thread: UnifiedThread) => Promise<void>;
+  onTrash: (thread: UnifiedThread) => void;
 };
 
 const UnifiedThreadRow = memo(function UnifiedThreadRow({
@@ -356,6 +366,7 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   isSelected,
   isDesktop,
   onOpen,
+  onTrash,
 }: UnifiedThreadRowProps) {
   const summary = thread.summary;
   const latest = summary?.latest;
@@ -364,6 +375,7 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   const optimistic = useOptimisticThreadState(thread.id);
   const [pending, setPending] = useState(false);
 
+  if (optimistic.optimisticDestination === 'bin') return null;
   if (!summary || !latest) {
     return <RowSkeleton />;
   }
@@ -413,6 +425,20 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
       <button
         type="button"
         onClick={handleClick}
+        onKeyDown={(event) => {
+          if (
+            event.key !== 'Delete' ||
+            event.repeat ||
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey
+          )
+            return;
+          event.preventDefault();
+          onTrash(thread);
+        }}
+        aria-keyshortcuts="Delete"
         disabled={pending}
         aria-current={isSelected ? 'true' : undefined}
         className={cn(

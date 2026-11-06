@@ -47,6 +47,14 @@ export const connectionsRouter = router({
       const foundConnection = await db.findUserConnection(connectionId);
       if (!foundConnection) throw new TRPCError({ code: 'NOT_FOUND' });
       await db.updateUser({ defaultConnectionId: connectionId });
+      return {
+        id: foundConnection.id,
+        email: foundConnection.email,
+        name: foundConnection.name,
+        picture: foundConnection.picture,
+        createdAt: foundConnection.createdAt,
+        providerId: foundConnection.providerId,
+      };
     }),
   delete: privateProcedure
     .input(z.object({ connectionId: z.string() }))

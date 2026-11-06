@@ -47,6 +47,8 @@ export function getDisplayKeysForShortcut(shortcut: Shortcut): string[] {
         return 'Esc';
       case 'backspace':
         return '⌫';
+      case 'delete':
+        return 'Delete';
       case 'enter':
         return '↵';
       case 'space':
@@ -120,6 +122,14 @@ const threadDisplayShortcuts: Shortcut[] = [
     type: 'single',
     description: 'Move to Bin',
     scope: 'thread-display',
+  },
+  {
+    keys: ['delete'],
+    action: 'trashWithDelete',
+    type: 'single',
+    description: 'Move to Bin',
+    scope: 'thread-display',
+    preventDefault: true,
   },
 ];
 
@@ -258,6 +268,14 @@ const mailListShortcuts: Shortcut[] = [
     type: 'single',
     description: 'Bulk delete',
     scope: 'mail-list',
+  },
+  {
+    keys: ['delete'],
+    action: 'trashWithDelete',
+    type: 'single',
+    description: 'Move to Bin',
+    scope: 'mail-list',
+    preventDefault: true,
   },
   {
     keys: ['s'],

@@ -14,7 +14,6 @@ import { OutlookMailManager } from '../../lib/driver/microsoft';
 import { processEmailHtml } from '../../lib/email-processor';
 import { withServerTiming } from '../../lib/server-timing';
 import { defaultPageSize, FOLDERS } from '../../lib/utils';
-import { GOA_MAIL_SCOPE } from '../../lib/goa-mail-token';
 import { isAiEnabledForUser } from '../../lib/ai-access';
 import { serializedFileSchema } from '../../lib/schemas';
 import type { DeleteAllSpamResponse } from '../../types';
@@ -258,30 +257,33 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { maxResults, cursor } = input;
       const db = await getZeroDB(ctx.sessionUser.id);
-      const allConnections = await db.findManyConnections();
+      const allConnections = await withServerTiming(ctx.c, 'unified_connections', () =>
+        db.findManyConnections(),
+      );
       const connections = allConnections.filter(isConnectionActive);
 
       const fallbackKey = cursor || new Date().toISOString();
       const results = await Promise.allSettled(
-        connections.map(async (connection) => {
+        connections.map(async (connection, index) => {
           const readInbox = async () => {
             if (connection.providerId === 'microsoft') {
               const driver = connectionToDriver(connection);
               if (driver instanceof OutlookMailManager)
                 return driver.listUnifiedInbox(maxResults, cursor);
             }
-            const agent = await getZeroAgent(connection.id, {
-              // Imported IMAP connections have no OAuth callback to start their first poll.
-              initializeAuth:
-                connection.providerId === 'imap' && connection.scope === GOA_MAIL_SCOPE,
-            });
+            // setMetaData restores provider auth and starts polling in the background.
+            const agent = await getZeroAgent(connection.id, { initializeAuth: false });
             return agent.listThreadsWithSummaries({
               folder: FOLDERS.INBOX,
               maxResults,
               pageToken: cursor,
             });
           };
-          const page = await readInbox();
+          const page = await withServerTiming(
+            ctx.c,
+            `unified_${connection.providerId}_${index}`,
+            readInbox,
+          );
           // Threads arrive sorted newest-first; a thread without a summary inherits its
           // predecessor's timestamp so it keeps its place in the merged order.
           let previousKey = fallbackKey;
@@ -373,11 +375,15 @@ export const mailRouter = router({
         threadId: z.string().array(),
         addLabels: z.string().array().optional().default([]),
         removeLabels: z.string().array().optional().default([]),
+        connectionId: z.string().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { activeConnection } = ctx;
-      const agent = await getZeroAgent(activeConnection.id);
+      const target = input.connectionId
+        ? await (await getZeroDB(ctx.sessionUser.id)).findUserConnection(input.connectionId)
+        : ctx.activeConnection;
+      if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
+      const agent = await getZeroAgent(target.id);
       const { threadId, addLabels, removeLabels } = input;
 
       console.log(`Server: updateThreadLabels called for thread ${threadId}`);

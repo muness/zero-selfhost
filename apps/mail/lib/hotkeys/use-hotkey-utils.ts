@@ -105,6 +105,7 @@ export const formatKeys = (keys: string[] | undefined): string => {
 
   const mapKey = (key: string) => {
     const lowerKey = key.toLowerCase();
+    if (lowerKey === 'delete') return lowerKey;
 
     // Use enhanced keyboard layout mapping
     const detectedLayout = keyboardLayoutMapper.getDetectedLayout();
@@ -324,6 +325,7 @@ export function useShortcuts(
 
       if (matchingEntry) {
         const [action, shortcut] = matchingEntry;
+        if (event.repeat && action === 'trashWithDelete') return;
         const handlerFn = handlers[action];
         if (handlerFn) {
           if (shortcut.preventDefault || options.preventDefault) {

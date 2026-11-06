@@ -21,6 +21,7 @@ export function getKeyCodeFromKey(key: string): string {
     enter: 'Enter',
     escape: 'Escape',
     backspace: 'Backspace',
+    delete: 'Delete',
     tab: 'Tab',
     shift: 'ShiftLeft',
     ctrl: 'ControlLeft',

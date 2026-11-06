@@ -1,6 +1,7 @@
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { enhancedKeyboardShortcuts } from '@/config/shortcuts';
+import { useActiveConnection } from '@/hooks/use-connections';
 import { useMailCategories } from '@/components/mail/mail';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useLocation, useParams } from 'react-router';
@@ -23,6 +24,7 @@ export function MailListHotkeys() {
   const pathname = useLocation().pathname;
   const params = useParams<{ folder: string }>();
   const folder = params?.folder ?? 'inbox';
+  const { data: connection } = useActiveConnection();
   const shouldUseHover = mail.bulkSelected.length === 0;
 
   const {
@@ -152,6 +154,20 @@ export function MailListHotkeys() {
     optimisticDeleteThreads(idsToDelete, folder);
   }, [mail.bulkSelected, folder, optimisticDeleteThreads, shouldUseHover]);
 
+  const trashWithDelete = useCallback(() => {
+    if (!connection?.id || folder === 'bin' || pathname.startsWith('/mail/unified')) return;
+    const ids =
+      shouldUseHover && hoveredEmailId.current ? [hoveredEmailId.current] : mail.bulkSelected;
+    optimisticMoveThreadsTo(ids, folder, 'bin', connection.id);
+  }, [
+    connection?.id,
+    folder,
+    pathname,
+    shouldUseHover,
+    mail.bulkSelected,
+    optimisticMoveThreadsTo,
+  ]);
+
   const bulkStar = useCallback(() => {
     if (shouldUseHover && hoveredEmailId.current) {
       optimisticToggleStar([hoveredEmailId.current], true);
@@ -216,6 +232,7 @@ export function MailListHotkeys() {
       archiveEmail,
       bulkArchive,
       bulkDelete,
+      trashWithDelete,
       bulkStar,
       exitSelectionMode,
       showImportant: () => switchCategoryByIndex(0),
@@ -234,6 +251,7 @@ export function MailListHotkeys() {
       archiveEmail,
       bulkArchive,
       bulkDelete,
+      trashWithDelete,
       bulkStar,
       exitSelectionMode,
     ],

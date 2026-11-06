@@ -8,6 +8,7 @@ export interface MoveThreadOptions {
   threadIds: string[];
   currentFolder: FolderLocation;
   destination: ThreadDestination;
+  connectionId?: string;
 }
 
 export function isActionAvailable(folder: FolderLocation, action: ThreadDestination): boolean {
@@ -46,7 +47,12 @@ export function getAvailableActions(folder: FolderLocation): ThreadDestination[]
   return allPossibleActions.filter((action) => isActionAvailable(folder, action));
 }
 
-export async function moveThreadsTo({ threadIds, currentFolder, destination }: MoveThreadOptions) {
+export async function moveThreadsTo({
+  threadIds,
+  currentFolder,
+  destination,
+  connectionId,
+}: MoveThreadOptions) {
   try {
     if (!threadIds.length) return;
     const isInInbox = currentFolder === FOLDERS.INBOX || !currentFolder;
@@ -98,11 +104,14 @@ export async function moveThreadsTo({ threadIds, currentFolder, destination }: M
       return;
     }
 
-    return trpcClient.mail.modifyLabels.mutate({
+    const result = await trpcClient.mail.modifyLabels.mutate({
       threadId: threadIds,
       addLabels: addLabel ? [addLabel] : [],
       removeLabels: removeLabel ? [removeLabel] : [],
+      connectionId,
     });
+    if (!result.success) throw new Error(result.error ?? 'Could not move thread');
+    return result;
   } catch (error) {
     console.error(`Error moving thread(s):`, error);
     throw error;

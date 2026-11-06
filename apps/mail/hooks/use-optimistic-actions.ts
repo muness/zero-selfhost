@@ -291,6 +291,7 @@ export function useOptimisticActions() {
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
+    connectionId?: string,
   ) {
     if (!threadIds.length || !destination) return;
 
@@ -329,6 +330,7 @@ export function useOptimisticActions() {
           threadIds,
           currentFolder,
           destination,
+          connectionId,
         });
 
         if (mail.bulkSelected.length > 0) {
