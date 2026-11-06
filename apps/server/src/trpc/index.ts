@@ -3,6 +3,7 @@ import { intelligentInboxRouter } from './routes/intelligent-inbox';
 import { mailDelegationRouter } from './routes/mail-delegation';
 import { cookiePreferencesRouter } from './routes/cookies';
 import { connectionsRouter } from './routes/connections';
+import { mailSourceRouter } from './routes/mail-source';
 import { categoriesRouter } from './routes/categories';
 import { templatesRouter } from './routes/templates';
 import { shortcutRouter } from './routes/shortcut';
@@ -31,6 +32,7 @@ export const appRouter = router({
   drafts: draftsRouter,
   labels: labelsRouter,
   mail: mailRouter,
+  mailSource: mailSourceRouter,
   notes: notesRouter,
   shortcut: shortcutRouter,
   settings: settingsRouter,
