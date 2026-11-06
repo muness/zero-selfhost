@@ -382,14 +382,13 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     <div className="flex h-full w-full flex-col">
       <div className="z-15 sticky top-0 flex items-center justify-between gap-1.5 p-2 pb-0">
         <div className="w-full">
-          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 md:grid md:grid-cols-[1fr_auto_1fr]">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
             <ZenNavigation />
-            <div className="bg-muted flex shrink-0 items-center gap-0.5 rounded-lg p-0.5 md:justify-self-center">
+            <div className="bg-muted flex shrink-0 items-center gap-0.5 rounded-lg p-0.5">
               <ZenComposeButton />
               <div className="bg-border mx-1 h-4 w-px" />
               <ZenFolderSelect />
             </div>
-            <AccountLegend accounts={[...accounts.values()]} failedIds={failedConnectionIds} />
           </div>
           <form
             role="search"
@@ -583,32 +582,6 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function AccountLegend({ accounts, failedIds }: { accounts: AccountInfo[]; failedIds: string[] }) {
-  if (accounts.length <= 1) return <div />;
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 md:justify-self-end">
-      {accounts.map((account) => (
-        <Tooltip key={account.id}>
-          <TooltipTrigger asChild>
-            <span
-              className={cn(
-                'bg-muted flex h-6 max-w-[160px] items-center gap-1.5 rounded-md px-2 text-xs',
-                failedIds.includes(account.id) && 'opacity-50',
-              )}
-            >
-              <span className={cn('size-2 shrink-0 rounded-full', account.color)} />
-              <span className="truncate">{account.email}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>
-            {account.name ? `${account.name} <${account.email}>` : account.email}
-          </TooltipContent>
-        </Tooltip>
-      ))}
     </div>
   );
 }
