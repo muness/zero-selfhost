@@ -14,6 +14,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { clearMailboxChatData } from './chat-attachments';
 import { getSocialProviders } from './auth-providers';
 import { getAuthRecoveryURL } from './auth-recovery';
+import { tailnetSession } from './tailnet-session';
 import { redis, resend, twilio } from './services';
 import { getContext } from 'hono/context-storage';
 import type { CreateEmailOptions } from 'resend';
@@ -161,9 +162,14 @@ const connectionHandlerHook = async (account: Account) => {
 
 export const createAuth = () => {
   const dub = new Dub();
+  const owner = env.TAILNET_OWNER_EMAIL;
+  const ingressKey = env.TAILNET_INGRESS_KEY;
+  const privateLogin = env.SELF_HOSTED === 'true' && owner && ingressKey;
 
   return betterAuth({
+    ...(privateLogin ? { disabledPaths: ['/sign-in/social'] } : {}),
     plugins: [
+      ...(privateLogin ? [tailnetSession(owner, ingressKey)] : []),
       dubAnalytics({
         dubClient: dub,
       }),
@@ -174,8 +180,11 @@ export const createAuth = () => {
       bearer(),
       phoneNumber({
         sendOTP: async ({ code, phoneNumber }) => {
-          await twilio().messages
-            .send(phoneNumber, `Your verification code is: ${code}, do not share it with anyone.`)
+          await twilio()
+            .messages.send(
+              phoneNumber,
+              `Your verification code is: ${code}, do not share it with anyone.`,
+            )
             .catch((error) => {
               console.error('Failed to send OTP', error);
               throw new APIError('INTERNAL_SERVER_ERROR', {

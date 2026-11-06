@@ -57,6 +57,11 @@ def worker_config(source):
         private_vars["GOA_MAIL_KEY"] = (STATE / "goa-broker-key").read_text().strip()
         if not private_vars["GOA_MAIL_KEY"]:
             raise ValueError("goa-broker-key is empty")
+    tailnet_owner = os.getenv("TAILNET_OWNER_EMAIL")
+    if tailnet_owner:
+        private_vars["TAILNET_INGRESS_KEY"] = (STATE / "tailnet-ingress-key").read_text().strip()
+        if len(private_vars["TAILNET_INGRESS_KEY"]) < 32:
+            raise ValueError("tailnet-ingress-key must contain at least 32 characters")
     for key in private_vars:
         local["vars"].pop(key, None)
     (SERVER / ".dev.vars.local").write_text(
@@ -77,6 +82,8 @@ def worker_config(source):
     )
     if goa_url:
         local["vars"]["GOA_MAIL_URL"] = goa_url
+    if tailnet_owner:
+        local["vars"]["TAILNET_OWNER_EMAIL"] = tailnet_owner
     config["env"] = {"local": local}
     return config
 
