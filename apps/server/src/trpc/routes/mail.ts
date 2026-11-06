@@ -1,9 +1,15 @@
 import {
+  postgresInbox,
+  postgresMailAction,
+  postgresMailCounts,
+  postgresMessageAttachments,
+  postgresThread,
+} from '../../lib/postgres-mail';
+import {
   IGetThreadResponseSchema,
   IGetThreadsResponseSchema,
   type IGetThreadsResponse,
 } from '../../lib/driver/types';
-import { postgresInbox, postgresMailAction, postgresThread } from '../../lib/postgres-mail';
 import { connectionToDriver, getZeroAgent, getZeroDB } from '../../lib/server-utils';
 import { updateWritingStyleMatrix } from '../../services/writing-style-service';
 import { activeDriverProcedure, router, privateProcedure } from '../trpc';
@@ -83,7 +89,9 @@ export const mailRouter = router({
     .query(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
       if (env.POSTGRES_MAIL_STORE === 'true') {
-        const stored = await postgresThread(ctx.sessionUser.id, activeConnection.id, input.id);
+        const stored = await withServerTiming(ctx.c, 'thread_postgres', () =>
+          postgresThread(ctx.sessionUser.id, activeConnection.id, input.id),
+        );
         if (stored) return stored;
       }
       const agent = await getZeroAgent(activeConnection.id, {
@@ -102,6 +110,10 @@ export const mailRouter = router({
     )
     .query(async ({ ctx }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true')
+        return withServerTiming(ctx.c, 'counts_postgres', () =>
+          postgresMailCounts(ctx.sessionUser.id, activeConnection.id),
+        );
       const agent = await getZeroAgent(activeConnection.id);
       return await agent.count();
     }),
@@ -119,6 +131,15 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { folder, maxResults, cursor, q, labelIds } = input;
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true' && folder === FOLDERS.INBOX && !q && !labelIds.length)
+        return withServerTiming(ctx.c, 'inbox_postgres', () =>
+          postgresInbox(
+            ctx.sessionUser.id,
+            Math.min(100, Math.max(1, Math.floor(maxResults))),
+            cursor,
+            activeConnection.id,
+          ),
+        );
       const agent = await getZeroAgent(activeConnection.id, {
         initializeAuth:
           !!q ||
@@ -714,6 +735,12 @@ export const mailRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const stored = await withServerTiming(ctx.c, 'attachments_postgres', () =>
+          postgresMessageAttachments(ctx.sessionUser.id, activeConnection.id, input.messageId),
+        );
+        if (stored !== null) return stored;
+      }
       const agent = await getZeroAgent(activeConnection.id);
       return agent.getMessageAttachments(input.messageId) as Promise<
         {

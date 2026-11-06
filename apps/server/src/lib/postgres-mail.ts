@@ -58,7 +58,12 @@ function message(row: Row): ParsedMessage {
   };
 }
 
-export async function postgresInbox(userId: string, limit: number, cursor: string) {
+export async function postgresInbox(
+  userId: string,
+  limit: number,
+  cursor: string,
+  connectionId?: string,
+) {
   type InboxRow = Row & {
     account: string;
     sort_at: string;
@@ -107,6 +112,7 @@ export async function postgresInbox(userId: string, limit: number, cursor: strin
         JOIN mail_store.message m ON (m.account, m.message_id) = (t.account, t.latest_id)
         JOIN mail0_connection c ON lower(c.email) = t.account AND c.user_id = ${userId}
         WHERE t.in_inbox
+          ${connectionId ? conn`AND c.id = ${connectionId}` : conn``}
           ${boundary ? conn`AND (t.received_at,t.account,t.thread_id) < (${boundary[0]}::timestamptz,${boundary[1]},${boundary[2]})` : conn``}
         ORDER BY t.received_at DESC,t.account DESC,t.thread_id DESC
         LIMIT ${limit + 1}
@@ -116,6 +122,7 @@ export async function postgresInbox(userId: string, limit: number, cursor: strin
                (m.last_success IS NOT NULL) AS ready
         FROM mail0_connection c LEFT JOIN mail_store.mailbox m ON m.account=lower(c.email)
         WHERE c.user_id=${userId}
+          ${connectionId ? conn`AND c.id = ${connectionId}` : conn``}
         ORDER BY c.created_at,c.id
       `,
     ]);
@@ -146,6 +153,57 @@ export async function postgresInbox(userId: string, limit: number, cursor: strin
           ? JSON.stringify([last.sort_at, last.account, last.thread_id])
           : null,
     };
+  } finally {
+    await conn.end();
+  }
+}
+
+export async function postgresMailCounts(userId: string, connectionId: string) {
+  const { conn } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    return await conn<{ label: string; count: number }[]>`
+      WITH mailbox AS (
+        SELECT lower(email) AS account FROM mail0_connection
+        WHERE user_id=${userId} AND id=${connectionId}
+      ), labeled AS (
+        SELECT m.thread_id,m.unread,l.label
+        FROM mailbox b JOIN mail_store.message m USING (account)
+        CROSS JOIN LATERAL jsonb_array_elements_text(m.metadata->'labels') AS l(label)
+        WHERE l.label IN ('SENT','DRAFT','SPAM','TRASH','STARRED','IMPORTANT')
+      )
+      SELECT CASE label WHEN 'DRAFT' THEN 'drafts' WHEN 'TRASH' THEN 'bin' ELSE lower(label) END AS label,
+             count(DISTINCT thread_id) FILTER (WHERE unread OR label IN ('SENT','DRAFT'))::int AS count
+      FROM labeled GROUP BY label
+      UNION ALL
+      SELECT 'inbox',count(*)::int
+      FROM mailbox b JOIN mail_store.thread t USING (account) WHERE t.in_inbox AND t.unread
+    `;
+  } finally {
+    await conn.end();
+  }
+}
+
+export async function postgresMessageAttachments(
+  userId: string,
+  connectionId: string,
+  messageId: string,
+) {
+  const { conn } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const [owner] = await conn<{ account: string }[]>`
+      SELECT m.account FROM mail0_connection c JOIN mail_store.message m ON m.account=lower(c.email)
+      WHERE c.user_id=${userId} AND c.id=${connectionId} AND m.message_id=${messageId}
+    `;
+    if (!owner) return null;
+    const rows = await conn<
+      { filename: string; mimeType: string; size: number; attachmentId: string; body: string }[]
+    >`
+      SELECT name AS filename,media_type AS "mimeType",octet_length(content) AS size,
+             attachment_id AS "attachmentId",replace(encode(content,'base64'),E'\\n','') AS body
+      FROM mail_store.attachment WHERE account=${owner.account} AND message_id=${messageId}
+      ORDER BY attachment_id
+    `;
+    return rows.map((row) => ({ ...row, headers: [] as { name: string; value: string }[] }));
   } finally {
     await conn.end();
   }
