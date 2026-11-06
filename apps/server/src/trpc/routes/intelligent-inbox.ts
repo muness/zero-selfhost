@@ -10,6 +10,7 @@ import {
   listExpenses,
   performAction,
   makePlan,
+  latestPendingPlan,
   applyPlan,
 } from '../../lib/intelligent-inbox';
 import { aiAvailable, miniModel } from '../../lib/ai-models';
@@ -80,9 +81,17 @@ export const intelligentInboxRouter = router({
         sql.begin((tx) => performAction(tx as unknown as typeof sql, ctx.sessionUser.id, input)),
       ),
     ),
+  latestPendingPlan: privateProcedure.query(({ ctx }) => latestPendingPlan(ctx.sessionUser.id)),
   plan: privateProcedure
-    .input(z.object({ text: z.string().trim().min(1).max(12000) }))
-    .mutation(({ ctx, input }) => makePlan(ctx.sessionUser.id, input.text)),
+    .input(
+      z.object({
+        text: z.string().trim().min(1).max(12000),
+        followUp: z
+          .object({ planId: z.string().uuid(), question: z.number().int().nonnegative() })
+          .optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => makePlan(ctx.sessionUser.id, input.text, input.followUp)),
   applyPlan: privateProcedure
     .input(z.object({ id: z.string(), operationIds: z.array(z.string()).max(30) }))
     .mutation(({ ctx, input }) => applyPlan(ctx.sessionUser.id, input.id, input.operationIds)),

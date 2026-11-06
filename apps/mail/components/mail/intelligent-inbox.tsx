@@ -30,10 +30,12 @@ const businessLabels = {
 
 export function IntelligentInbox({
   view,
+  searchQuery,
   onOpen,
   enabled,
 }: {
   view: IntelligenceView;
+  searchQuery: string;
   onOpen: (mail: OpenableMail) => Promise<void>;
   enabled: boolean;
 }) {
@@ -44,8 +46,6 @@ export function IntelligentInbox({
   );
   const { optimisticMoveThreadsTo, optimisticToggleStar } = useOptimisticActions();
   const [instruction, setInstruction] = useState('');
-  const [searchText, setSearchText] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const search = useQuery(
     trpc.intelligentInbox.search.queryOptions(
       { query: searchQuery, limit: 100 },
@@ -59,6 +59,17 @@ export function IntelligentInbox({
     ),
   );
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const pendingProposal = useQuery(
+    trpc.intelligentInbox.latestPendingPlan.queryOptions(undefined, {
+      enabled: !proposal && view === 'inbox',
+    }),
+  );
+  const [reply, setReply] = useState('');
+  const [replyQuestion, setReplyQuestion] = useState('');
+  const [priorProposal, setPriorProposal] = useState<{
+    proposal: Proposal;
+    chosen: Set<string>;
+  } | null>(null);
   const [delegationDraft, setDelegationDraft] = useState<DelegationDraft | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const delegations = useQuery(
@@ -87,7 +98,11 @@ export function IntelligentInbox({
   );
   const plan = useMutation(
     trpc.intelligentInbox.plan.mutationOptions({
-      onSuccess: (result) => {
+      onSuccess: (result, input) => {
+        if (input.followUp && proposal) setPriorProposal({ proposal, chosen });
+        else setPriorProposal(null);
+        setReply('');
+        setReplyQuestion('');
         setProposal(result);
         setChosen(new Set(result.operations.map((operation) => operation.id)));
       },
@@ -98,8 +113,10 @@ export function IntelligentInbox({
     trpc.intelligentInbox.applyPlan.mutationOptions({
       onSuccess: async (result) => {
         await refresh();
-        setProposal(null);
-        setInstruction('');
+        setProposal(priorProposal?.proposal ?? null);
+        setChosen(priorProposal?.chosen ?? new Set());
+        setPriorProposal(null);
+        if (!priorProposal) setInstruction('');
         toast.success(`${result.applied} instructions applied`);
       },
       onError: (error) => toast.error(error.message),
@@ -292,7 +309,8 @@ export function IntelligentInbox({
           className="border-border bg-background my-4 rounded-xl border p-3"
           onSubmit={(event) => {
             event.preventDefault();
-            if (instruction.trim()) plan.mutate({ text: instruction.trim() });
+            if (instruction.trim() && !plan.isPending && !apply.isPending)
+              plan.mutate({ text: instruction.trim() });
           }}
         >
           <label htmlFor="inbox-instruction" className="mb-2 block text-sm font-medium">
@@ -302,6 +320,7 @@ export function IntelligentInbox({
             id="inbox-instruction"
             ref={textRef}
             value={instruction}
+            disabled={plan.isPending || apply.isPending}
             onChange={(event) => {
               setInstruction(event.target.value);
               if (proposal) setProposal(null);
@@ -312,7 +331,8 @@ export function IntelligentInbox({
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 event.preventDefault();
-                if (instruction.trim()) plan.mutate({ text: instruction.trim() });
+                if (instruction.trim() && !plan.isPending && !apply.isPending)
+                  plan.mutate({ text: instruction.trim() });
               }
             }}
           />
@@ -340,10 +360,15 @@ export function IntelligentInbox({
               ) : (
                 <ArrowUp className="mr-2 size-4" />
               )}
-              Send
+              {plan.isPending ? 'Preparing proposal…' : 'Send'}
             </Button>
           </div>
         </form>
+        {plan.isError && (
+          <p role="alert" className="text-destructive my-3 text-sm">
+            {plan.error.message}
+          </p>
+        )}
         {(delegationDraft ||
           activeTaskId ||
           (delegations.data?.length ?? 0) > 0 ||
@@ -356,6 +381,23 @@ export function IntelligentInbox({
             tasks={delegations.data ?? []}
             unavailable={delegations.isError}
           />
+        )}
+        {!proposal && !plan.isPending && view === 'inbox' && pendingProposal.data && (
+          <Button
+            className="mb-3"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const saved = pendingProposal.data;
+              if (!saved) return;
+              setInstruction(saved.text);
+              setProposal(saved);
+              setChosen(new Set(saved.operations.map((operation) => operation.id)));
+              plan.reset();
+            }}
+          >
+            Resume last proposal
+          </Button>
         )}
         {proposal && (
           <section
@@ -397,11 +439,59 @@ export function IntelligentInbox({
                 {question}
               </p>
             ))}
+            {proposal.questions.length > 0 && !priorProposal && (
+              <form
+                className="my-3 flex flex-wrap gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (reply.trim() && !plan.isPending && !apply.isPending) {
+                    const question = proposal.questions.length === 1 ? 0 : Number(replyQuestion);
+                    if (proposal.questions.length > 1 && replyQuestion === '') return;
+                    plan.mutate({
+                      text: reply.trim(),
+                      followUp: { planId: proposal.id, question },
+                    });
+                  }
+                }}
+              >
+                {proposal.questions.length > 1 && (
+                  <select
+                    required
+                    aria-label="Question to reply to"
+                    value={replyQuestion}
+                    onChange={(event) => setReplyQuestion(event.target.value)}
+                    className="border-border bg-background w-full rounded-lg border px-3 py-2 text-sm"
+                  >
+                    <option value="">Choose a question to reply to</option>
+                    {proposal.questions.map((question, index) => (
+                      <option key={index} value={index}>
+                        {question}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <input
+                  aria-label="Reply to proposal questions"
+                  placeholder="Reply to the questions above…"
+                  value={reply}
+                  onChange={(event) => setReply(event.target.value)}
+                  className="border-border bg-background min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  disabled={!reply.trim() || plan.isPending || apply.isPending}
+                >
+                  {plan.isPending ? 'Preparing…' : 'Reply'}
+                </Button>
+              </form>
+            )}
             <div className="mt-3 flex flex-wrap gap-2">
               {proposal.operations.length > 0 && (
                 <Button
                   size="sm"
-                  disabled={!chosen.size || apply.isPending}
+                  disabled={!chosen.size || apply.isPending || plan.isPending}
                   onClick={() => apply.mutate({ id: proposal.id, operationIds: [...chosen] })}
                 >
                   {apply.isPending ? 'Applying…' : `Apply ${chosen.size} selected`}
@@ -410,12 +500,17 @@ export function IntelligentInbox({
               <Button
                 size="sm"
                 variant="outline"
+                disabled={plan.isPending || apply.isPending}
                 onClick={() => {
-                  setProposal(null);
-                  textRef.current?.focus();
+                  setProposal(priorProposal?.proposal ?? null);
+                  setChosen(priorProposal?.chosen ?? new Set());
+                  setPriorProposal(null);
+                  setReply('');
+                  setReplyQuestion('');
+                  if (!priorProposal) textRef.current?.focus();
                 }}
               >
-                Edit instructions
+                {priorProposal ? 'Back to previous proposal' : 'Edit instructions'}
               </Button>
             </div>
           </section>
@@ -718,25 +813,9 @@ export function IntelligentInbox({
         )}
         {view === 'all-mail' && (
           <section>
-            <h2 className="mb-3 text-base font-semibold">All Mail</h2>
-            <form
-              className="mb-5 flex gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                setSearchQuery(searchText.trim());
-              }}
-            >
-              <input
-                aria-label="Search all mail including archived messages"
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Search all accounts, including archived mail…"
-                className="border-border bg-background focus-visible:ring-ring min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-              />
-              <Button type="submit" variant="outline" disabled={search.isFetching}>
-                Search
-              </Button>
-            </form>
+            <h2 className="mb-3 text-base font-semibold">
+              {searchQuery ? `Search results for “${searchQuery}”` : 'All Mail'}
+            </h2>
             {search.isLoading && (
               <p role="status" className="text-muted-foreground text-sm">
                 Searching your stored mail…

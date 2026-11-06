@@ -26,10 +26,10 @@ import { cn, formatListDate } from '@/lib/utils';
 import { VList, type VListHandle } from 'virtua';
 import { useSession } from '@/lib/auth-client';
 import { BimiAvatar } from '../ui/bimi-avatar';
+import { Search, Star } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
-import { Star } from 'lucide-react';
 import { useStore } from 'jotai';
 import { toast } from 'sonner';
 
@@ -149,6 +149,8 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const store = useStore();
   const [threadId, setThreadId] = useQueryState('threadId');
   const [inboxView, setInboxView] = useQueryState('view', { defaultValue: 'inbox' });
+  const [mailQuery, setMailQuery] = useQueryState('q', { defaultValue: '' });
+  const [searchText, setSearchText] = useState(mailQuery);
   const [, setDraftId] = useQueryState('draftId');
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -389,6 +391,32 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
             </div>
             <AccountLegend accounts={[...accounts.values()]} failedIds={failedConnectionIds} />
           </div>
+          <form
+            role="search"
+            className="mx-auto mb-2 flex w-full max-w-5xl gap-2 px-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void setMailQuery(searchText.trim());
+              void setInboxView('all-mail');
+            }}
+          >
+            <input
+              type="search"
+              aria-label="Search all mail"
+              placeholder="Search all accounts, including archived mail…"
+              maxLength={500}
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              className="border-border bg-background focus-visible:ring-ring min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+            />
+            <button
+              type="submit"
+              className="border-border hover:bg-muted flex items-center gap-2 rounded-lg border px-3 text-sm"
+            >
+              <Search className="size-4" aria-hidden />
+              Search
+            </button>
+          </form>
           <nav
             aria-label="Inbox views"
             className="border-border mb-2 flex gap-1 overflow-x-auto border-b"
@@ -498,6 +526,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
               ? inboxView
               : 'inbox') as IntelligenceView
           }
+          searchQuery={mailQuery}
           onOpen={openThread}
           enabled={!threadId && !isCommandPaletteOpen && !isComposeOpen}
         />
@@ -541,6 +570,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
                       thread.id === threadId && thread.connectionId === activeConnection?.id
                     }
                     isDesktop={isDesktop}
+                    searchQuery={mailQuery}
                     onOpen={openThread}
                     isFocused={rowKey(thread) === focusedKey}
                     isChecked={selectedKeys.has(rowKey(thread))}
