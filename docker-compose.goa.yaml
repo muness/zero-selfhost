@@ -1,0 +1,19 @@
+services:
+  zero:
+    environment:
+      GOA_MAIL_URL: http://goa-mail:8364
+
+  goa-mail:
+    image: ${GOA_IMAGE:?Set the locally built GOA image tag}
+    volumes:
+      - goa-state:/goa
+    tmpfs:
+      - /run/zero-goa:mode=0700,uid=65534,gid=65534,nosuid,nodev,noexec
+    networks: [data, goa-egress]
+    restart: unless-stopped
+
+networks:
+  goa-egress:
+
+volumes:
+  goa-state:

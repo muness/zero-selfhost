@@ -74,6 +74,7 @@ export interface ImapManagerSettings {
   secret: EncryptedSecret;
   /** XOAUTH2 access token cached on the connection row, if still valid. */
   accessToken?: string | null;
+  getAccessToken?: () => Promise<{ accessToken: string; expiresAt: number }>;
   serverSavesSent: boolean;
   /** Called when an OAuth provider rotates the refresh token, so it can be persisted. */
   onSecretRotated?: (secret: EncryptedSecret) => Promise<void>;

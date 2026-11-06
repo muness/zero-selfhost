@@ -14,6 +14,7 @@ import { OutlookMailManager } from '../../lib/driver/microsoft';
 import { processEmailHtml } from '../../lib/email-processor';
 import { withServerTiming } from '../../lib/server-timing';
 import { defaultPageSize, FOLDERS } from '../../lib/utils';
+import { GOA_MAIL_SCOPE } from '../../lib/goa-mail-token';
 import { isAiEnabledForUser } from '../../lib/ai-access';
 import { serializedFileSchema } from '../../lib/schemas';
 import type { DeleteAllSpamResponse } from '../../types';
@@ -269,7 +270,11 @@ export const mailRouter = router({
               if (driver instanceof OutlookMailManager)
                 return driver.listUnifiedInbox(maxResults, cursor);
             }
-            const agent = await getZeroAgent(connection.id, { initializeAuth: false });
+            const agent = await getZeroAgent(connection.id, {
+              // Imported IMAP connections have no OAuth callback to start their first poll.
+              initializeAuth:
+                connection.providerId === 'imap' && connection.scope === GOA_MAIL_SCOPE,
+            });
             return agent.listThreadsWithSummaries({
               folder: FOLDERS.INBOX,
               maxResults,

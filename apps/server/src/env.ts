@@ -48,6 +48,8 @@ export type ZeroEnv = {
   BETTER_AUTH_URL: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  GOA_MAIL_URL?: string;
+  GOA_MAIL_KEY?: string;
   RESEND_API_KEY: string;
   VITE_PUBLIC_POSTHOG_KEY: string;
   VITE_PUBLIC_POSTHOG_HOST: string;

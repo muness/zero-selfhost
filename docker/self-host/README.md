@@ -26,6 +26,9 @@ account types you need. Put its `client_id`, `client_secret`, and optional
 `tenant_id` in `/state/microsoft-web.json`. Use UID 1000 and mode 0600 for
 credential files.
 
+If the mailboxes are already connected in GNOME Online Accounts, you can
+[reuse their OAuth grants](GOA.md) for Gmail IMAP and Outlook Graph.
+
 This deployment uses local Wrangler and persistent Workers bindings. Hosted
 AI, Vectorize, and workflows are disabled. Use the existing NAS agent index
 for indexed mail access. Confirm actual provider mail appears in All Inboxes

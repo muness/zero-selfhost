@@ -222,6 +222,10 @@ export class ImapMailManager implements MailManager {
   private async accessToken(force = false) {
     if (!force && this.oauth && this.oauth.expiresAt > Date.now() + 60_000)
       return this.oauth.accessToken;
+    if (this.settings.getAccessToken) {
+      this.oauth = await this.settings.getAccessToken();
+      return this.oauth.accessToken;
+    }
     const provider = this.settings.oauthProvider;
     if (!provider) throw new OAuthRefreshError('XOAUTH2 connection has no OAuth provider', true);
     const deps = await this.depsPromise;

@@ -52,6 +52,11 @@ def worker_config(source):
     private_vars = private_state()
     private_vars["MICROSOFT_CLIENT_SECRET"] = microsoft.get("client_secret", "")
     private_vars["GOOGLE_CLIENT_SECRET"] = google.get("client_secret", os.getenv("GOOGLE_CLIENT_SECRET", ""))
+    goa_url = os.getenv("GOA_MAIL_URL")
+    if goa_url:
+        private_vars["GOA_MAIL_KEY"] = (STATE / "goa-broker-key").read_text().strip()
+        if not private_vars["GOA_MAIL_KEY"]:
+            raise ValueError("goa-broker-key is empty")
     for key in private_vars:
         local["vars"].pop(key, None)
     (SERVER / ".dev.vars.local").write_text(
@@ -70,6 +75,8 @@ def worker_config(source):
         MICROSOFT_TENANT_ID=microsoft.get("tenant_id", "common"),
         MICROSOFT_IMPORTED_CLIENTS=json.dumps(imported_clients),
     )
+    if goa_url:
+        local["vars"]["GOA_MAIL_URL"] = goa_url
     config["env"] = {"local": local}
     return config
 
