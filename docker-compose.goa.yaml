@@ -5,6 +5,9 @@ services:
 
   goa-mail:
     image: ${GOA_IMAGE:?Set the locally built GOA image tag}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - goa-state:/goa
     tmpfs:
