@@ -1,5 +1,7 @@
 # ZeroMail source connector
 
+**Current mail integration uses callbacks, not this bulk publisher.** Reuse the existing Postgres search index through the [versioned search/fetch/change callbacks](https://github.com/muness/home-infra/blob/codex/zero-mail-delegation/deploy/zero-poc/SOURCE_CALLBACKS.md), with [Context Assembly federation](https://github.com/open-horizon-labs/codex-assembler/blob/codex/mail-source-callback-plan/codex-rs/assembler/services/MAIL_CALLBACKS.md) and [Ether Hub task callbacks](https://github.com/open-horizon-labs/ether-hub/blob/codex/mail-source-callback-plan/docs/home-mail-adapter.md). The bulk implementation below is retained as an optional ingestion contribution; it is disabled in the live mail deployment. Do not enable it to register a searchable mail source.
+
 This package publishes explicitly enrolled mail text to the Context Assembly
 source ingestion contract. It includes transactional capture, durable ordered
 publication, retries and withdrawal handling. It makes no model calls and exports
