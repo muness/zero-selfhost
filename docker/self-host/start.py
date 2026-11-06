@@ -84,6 +84,8 @@ def worker_config(source):
         local["vars"]["GOA_MAIL_URL"] = goa_url
     if tailnet_owner:
         local["vars"]["TAILNET_OWNER_EMAIL"] = tailnet_owner
+    if os.getenv("POSTGRES_MAIL_STORE") == "true":
+        local["vars"]["POSTGRES_MAIL_STORE"] = "true"
     config["env"] = {"local": local}
     return config
 

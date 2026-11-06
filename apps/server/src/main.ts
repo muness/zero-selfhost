@@ -959,10 +959,13 @@ export default class Entry extends WorkerEntrypoint<ZeroEnv> {
   async scheduled() {
     console.log('[SCHEDULED] Checking for expired subscriptions...');
     const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
-    const allAccounts = await db.query.connection.findMany({
-      where: (fields, { isNotNull, and }) =>
-        and(isNotNull(fields.accessToken), isNotNull(fields.refreshToken)),
-    });
+    const allAccounts =
+      this.env.POSTGRES_MAIL_STORE === 'true'
+        ? []
+        : await db.query.connection.findMany({
+            where: (fields, { isNotNull, and }) =>
+              and(isNotNull(fields.accessToken), isNotNull(fields.refreshToken)),
+          });
     await conn.end();
     console.log('[SCHEDULED] allAccounts', allAccounts.length);
     // Bound startup fan-out. Each mailbox preserves its own polling/backoff

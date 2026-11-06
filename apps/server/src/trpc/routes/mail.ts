@@ -3,6 +3,7 @@ import {
   IGetThreadsResponseSchema,
   type IGetThreadsResponse,
 } from '../../lib/driver/types';
+import { postgresInbox, postgresMailAction, postgresThread } from '../../lib/postgres-mail';
 import { connectionToDriver, getZeroAgent, getZeroDB } from '../../lib/server-utils';
 import { updateWritingStyleMatrix } from '../../services/writing-style-service';
 import { activeDriverProcedure, router, privateProcedure } from '../trpc';
@@ -81,6 +82,10 @@ export const mailRouter = router({
     .output(IGetThreadResponseSchema)
     .query(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const stored = await postgresThread(ctx.sessionUser.id, activeConnection.id, input.id);
+        if (stored) return stored;
+      }
       const agent = await getZeroAgent(activeConnection.id, {
         initializeAuth: !isConnectionActive(activeConnection),
       });
@@ -256,6 +261,10 @@ export const mailRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { maxResults, cursor } = input;
+      if (env.POSTGRES_MAIL_STORE === 'true')
+        return withServerTiming(ctx.c, 'unified_postgres', () =>
+          postgresInbox(ctx.sessionUser.id, maxResults, cursor),
+        );
       const db = await getZeroDB(ctx.sessionUser.id);
       const allConnections = await withServerTiming(ctx.c, 'unified_connections', () =>
         db.findManyConnections(),
@@ -344,6 +353,11 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        (await postgresMailAction(ctx.sessionUser.id, activeConnection.id, input.ids, 'read'))
+      )
+        return { success: true };
       const agent = await getZeroAgent(activeConnection.id);
       return agent.markAsRead(input.ids);
     }),
@@ -355,6 +369,11 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        (await postgresMailAction(ctx.sessionUser.id, activeConnection.id, input.ids, 'unread'))
+      )
+        return { success: true };
       const agent = await getZeroAgent(activeConnection.id);
       return agent.markAsUnread(input.ids);
     }),
@@ -384,6 +403,21 @@ export const mailRouter = router({
         : ctx.activeConnection;
       if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
       const { threadId, addLabels, removeLabels } = input;
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const add = addLabels[0];
+        const action =
+          add === 'TRASH'
+            ? 'trash'
+            : add === 'SPAM'
+              ? 'spam'
+              : add === 'INBOX'
+                ? 'inbox'
+                : !add && removeLabels.includes('INBOX')
+                  ? 'archive'
+                  : null;
+        if (action && (await postgresMailAction(ctx.sessionUser.id, target.id, threadId, action)))
+          return { success: true };
+      }
 
       try {
         const agent = await getZeroAgent(target.id);

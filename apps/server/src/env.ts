@@ -50,6 +50,7 @@ export type ZeroEnv = {
   GOOGLE_CLIENT_SECRET: string;
   GOA_MAIL_URL?: string;
   GOA_MAIL_KEY?: string;
+  POSTGRES_MAIL_STORE?: string;
   SELF_HOSTED?: 'true' | 'false';
   TAILNET_OWNER_EMAIL?: string;
   TAILNET_INGRESS_KEY?: string;
