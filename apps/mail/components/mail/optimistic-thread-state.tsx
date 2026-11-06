@@ -14,7 +14,7 @@ const sameActions = (a: OptimisticAction[], b: OptimisticAction[]) =>
  * Actions indexed by thread id, built once per change of the action set. Every mounted list
  * row selects from this instead of scanning all actions itself (O(actions) per row).
  */
-const actionsByThreadAtom = atom((get) => {
+export const actionsByThreadAtom = atom((get) => {
   const byThread = new Map<string, OptimisticAction[]>();
   for (const action of Object.values(get(optimisticActionsAtom))) {
     for (const threadId of action.threadIds) {

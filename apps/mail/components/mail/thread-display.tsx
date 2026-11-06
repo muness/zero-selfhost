@@ -20,8 +20,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { ARCHIVE_KEY, MOVE_TO_BIN_KEY, STAR_KEY } from '@/config/shortcuts';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
-import { MOVE_TO_BIN_KEY } from '@/config/shortcuts';
 
 import {
   lazy,
@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { focusedIndexAtom, mailNavigationCommandAtom } from '@/hooks/use-mail-navigation';
 import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { useHotkeys } from 'react-hotkeys-hook';
+import { isHotkeyPressed, useHotkeys } from 'react-hotkeys-hook';
 
 import { loadReplyComposer, ThreadDraftCard, useThreadDraftTimeline } from './thread-draft-card';
 import { type ThreadDestination } from '@/lib/thread-actions';
@@ -372,10 +372,19 @@ export function ThreadDisplay() {
       setActiveReplyId(null);
       setDraftId(null);
 
-      optimisticMoveThreadsTo([id], folder, destination);
+      optimisticMoveThreadsTo([id], folder, destination, emailData?.latest?.connectionId);
       handleNext();
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, setMode, setActiveReplyId, setDraftId],
+    [
+      id,
+      folder,
+      optimisticMoveThreadsTo,
+      handleNext,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      emailData?.latest?.connectionId,
+    ],
   );
 
   const { optimisticToggleStar } = useOptimisticActions();
@@ -384,8 +393,26 @@ export function ThreadDisplay() {
     if (!emailData || !id) return;
 
     const newStarredState = !isStarred;
-    optimisticToggleStar([id], newStarredState);
+    optimisticToggleStar([id], newStarredState, emailData.latest?.connectionId);
   }, [emailData, id, isStarred, optimisticToggleStar]);
+
+  useHotkeys(
+    [STAR_KEY, ARCHIVE_KEY],
+    (event) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || isHotkeyPressed('g'))
+        return;
+      if (event.key === ARCHIVE_KEY && (isInArchive || isInBin || isInSpam)) return;
+      event.preventDefault();
+      if (event.key === STAR_KEY) void handleToggleStar();
+      else void moveThreadTo('archive');
+    },
+    {
+      scopes: ['thread-display'],
+      enabled: threadHotkeysEnabled && !!emailData && !activeReplyId,
+      useKey: true,
+    },
+    [handleToggleStar, moveThreadTo, isInArchive, isInBin, isInSpam],
+  );
 
   const printThread = () => {
     try {
@@ -1008,6 +1035,7 @@ export function ThreadDisplay() {
                             : m['common.threadDisplay.star']()
                         }
                         aria-pressed={isStarred}
+                        aria-keyshortcuts="S"
                         className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131]"
                       >
                         <Star
@@ -1023,7 +1051,8 @@ export function ThreadDisplay() {
                     <TooltipContent side="bottom" className="bg-white dark:bg-[#313131]">
                       {isStarred
                         ? m['common.threadDisplay.unstar']()
-                        : m['common.threadDisplay.star']()}
+                        : m['common.threadDisplay.star']()}{' '}
+                      <kbd className="ml-1 font-mono">S</kbd>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -1034,13 +1063,14 @@ export function ThreadDisplay() {
                       <button
                         onClick={() => moveThreadTo('archive')}
                         aria-label={m['common.threadDisplay.archive']()}
+                        aria-keyshortcuts="E"
                         className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131]"
                       >
                         <Archive className="fill-iconLight dark:fill-iconDark" />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="bg-white dark:bg-[#313131]">
-                      {m['common.threadDisplay.archive']()}
+                      {m['common.threadDisplay.archive']()} <kbd className="ml-1 font-mono">E</kbd>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

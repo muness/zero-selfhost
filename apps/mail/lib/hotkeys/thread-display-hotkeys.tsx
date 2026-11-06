@@ -67,7 +67,7 @@ export function ThreadDisplayHotkeys() {
   };
 
   const threadDisplayShortcuts = enhancedKeyboardShortcuts.filter(
-    (shortcut) => shortcut.scope === scope,
+    (shortcut) => shortcut.scope === scope && shortcut.action in handlers,
   );
 
   useShortcuts(threadDisplayShortcuts, handlers, { scope });

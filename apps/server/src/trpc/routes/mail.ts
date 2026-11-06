@@ -466,18 +466,40 @@ export const mailRouter = router({
       z.object({
         ids: z.string().array(),
         starred: z.boolean().optional(),
+        connectionId: z.string().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { activeConnection } = ctx;
-      const agent = await getZeroAgent(activeConnection.id);
-      const { threadIds } = await agent.normalizeIds(input.ids);
+      const target = input.connectionId
+        ? await (await getZeroDB(ctx.sessionUser.id)).findUserConnection(input.connectionId)
+        : ctx.activeConnection;
+      if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        input.starred !== undefined &&
+        (await postgresMailAction(
+          ctx.sessionUser.id,
+          target.id,
+          input.ids,
+          input.starred ? 'star' : 'unstar',
+        ))
+      )
+        return { success: true };
 
-      if (!threadIds.length) {
-        return { success: false, error: 'No thread IDs provided' };
+      try {
+        const agent = await getZeroAgent(target.id);
+        const { threadIds } = await agent.normalizeIds(input.ids);
+        if (!threadIds.length) return { success: false, error: 'No thread IDs provided' };
+        return await agent.setThreadsStarred(threadIds, input.starred);
+      } catch (cause) {
+        if (target.id !== ctx.activeConnection.id)
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Could not update the selected mailbox',
+            cause,
+          });
+        throw cause;
       }
-
-      return agent.setThreadsStarred(threadIds, input.starred);
     }),
   toggleImportant: activeDriverProcedure
     .input(

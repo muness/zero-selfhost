@@ -1,11 +1,12 @@
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { actionsByThreadAtom, useOptimisticThreadState } from './optimistic-thread-state';
 import { isHotkeyPressed, useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ZenComposeButton, ZenFolderSelect, ZenNavigation } from './zen-navigation';
 import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExclamationCircle, GroupPeople, PencilCompose } from '../icons/icons';
+import { ARCHIVE_KEY, MOVE_TO_BIN_KEY, STAR_KEY } from '@/config/shortcuts';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { useOptimisticThreadState } from './optimistic-thread-state';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ThreadDisplay } from '@/components/mail/thread-display';
 import { PricingDialog } from '@/components/ui/pricing-dialog';
@@ -16,7 +17,6 @@ import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useAiEnabled } from '@/hooks/use-ai-enabled';
 import { useTRPC } from '@/providers/query-provider';
-import { MOVE_TO_BIN_KEY } from '@/config/shortcuts';
 import AISidebar from '@/components/ui/ai-sidebar';
 import { useSettings } from '@/hooks/use-settings';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -28,6 +28,8 @@ import { BimiAvatar } from '../ui/bimi-avatar';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
+import { Star } from 'lucide-react';
+import { useStore } from 'jotai';
 import { toast } from 'sonner';
 
 /** Distinguishes accounts at a glance; assigned by each account's position in the list. */
@@ -49,6 +51,16 @@ const rowKey = (thread: { connectionId: string; id: string }) =>
 type UnifiedThread = ReturnType<typeof useUnifiedInbox>['threads'][number];
 type UnifiedConnection = ReturnType<typeof useUnifiedInbox>['connections'][number];
 type AccountInfo = UnifiedConnection & { color: string };
+
+function threadsByConnection(items: UnifiedThread[]) {
+  const byConnection = new Map<string, string[]>();
+  for (const thread of items) {
+    const ids = byConnection.get(thread.connectionId) ?? [];
+    ids.push(thread.id);
+    byConnection.set(thread.connectionId, ids);
+  }
+  return byConnection;
+}
 
 export function UnifiedInboxLayout() {
   const isMobile = useIsMobile();
@@ -131,7 +143,9 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const queryClient = useQueryClient();
   const { data: activeConnection } = useActiveConnection();
   const { data: settingsData } = useSettings();
-  const { optimisticMarkAsRead, optimisticMoveThreadsTo } = useOptimisticActions();
+  const { optimisticMarkAsRead, optimisticMoveThreadsTo, optimisticToggleStar } =
+    useOptimisticActions();
+  const store = useStore();
   const [threadId, setThreadId] = useQueryState('threadId');
   const [, setDraftId] = useQueryState('draftId');
   const [, setMode] = useQueryState('mode');
@@ -250,15 +264,21 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
       return next;
     });
   }, []);
-  const trashThreads = (items: UnifiedThread[]) => {
-    const byAccount = new Map<string, string[]>();
-    for (const thread of items) {
-      const ids = byAccount.get(thread.connectionId) ?? [];
-      ids.push(thread.id);
-      byAccount.set(thread.connectionId, ids);
-    }
-    for (const [connection, ids] of byAccount)
-      optimisticMoveThreadsTo(ids, 'inbox', 'bin', connection);
+  const starThreads = (items: UnifiedThread[]) => {
+    const actions = store.get(actionsByThreadAtom);
+    const starred = !items.every(({ id, summary }) => {
+      const pending = actions.get(id)?.findLast((action) => action.type === 'STAR');
+      return pending?.type === 'STAR'
+        ? pending.starred
+        : summary?.latest?.tags?.some((tag) => tag.name === 'STARRED');
+    });
+    for (const [connection, ids] of threadsByConnection(items))
+      optimisticToggleStar(ids, starred, connection);
+  };
+
+  const moveThreads = (items: UnifiedThread[], destination: 'bin' | 'archive') => {
+    for (const [connection, ids] of threadsByConnection(items))
+      optimisticMoveThreadsTo(ids, 'inbox', destination, connection);
     setSelectedKeys(new Set());
     // Keep the cursor near the next available message.
     const removed = new Set(items.map(rowKey));
@@ -306,9 +326,14 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
       return;
     }
     const thread = threads[focusedIndex];
-    if (event.key === MOVE_TO_BIN_KEY && (selectedThreads.length || thread)) {
+    const targets = selectedThreads.length ? selectedThreads : thread ? [thread] : [];
+    if (
+      targets.length &&
+      (event.key === MOVE_TO_BIN_KEY || event.key === ARCHIVE_KEY || event.key === STAR_KEY)
+    ) {
       event.preventDefault();
-      trashThreads(selectedThreads.length ? selectedThreads : [thread]);
+      if (event.key === STAR_KEY) starThreads(targets);
+      else moveThreads(targets, event.key === ARCHIVE_KEY ? 'archive' : 'bin');
     } else if (thread && (event.key === 'x' || event.key === ' ' || event.key === 'Enter')) {
       // Let native buttons/checkboxes handle Space and Enter when tabbed to directly.
       if (
@@ -323,7 +348,19 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     }
   };
   useHotkeys(
-    'up,down,j,k,x,space,enter,escape,' + MOVE_TO_BIN_KEY,
+    [
+      'up',
+      'down',
+      'j',
+      'k',
+      'x',
+      'space',
+      'enter',
+      'escape',
+      MOVE_TO_BIN_KEY,
+      ARCHIVE_KEY,
+      STAR_KEY,
+    ],
     handleListKey,
     {
       enabled: keyboardEnabled,
@@ -357,7 +394,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
                     type="button"
                     className="hover:bg-muted rounded px-2 py-1"
                     aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
-                    onClick={() => trashThreads(selectedThreads)}
+                    onClick={() => moveThreads(selectedThreads, 'bin')}
                   >
                     {m['common.mail.moveToBin']()}
                   </button>
@@ -365,6 +402,32 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
                 <TooltipContent>
                   {m['common.mail.moveToBin']()} · {MOVE_TO_BIN_KEY.toUpperCase()}
                 </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts="E"
+                    onClick={() => moveThreads(selectedThreads, 'archive')}
+                  >
+                    {m['common.threadDisplay.archive']()}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{m['common.threadDisplay.archive']()} · E</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts="S"
+                    onClick={() => starThreads(selectedThreads)}
+                  >
+                    Star / unstar
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Star / unstar · S</TooltipContent>
               </Tooltip>
               <button
                 type="button"
@@ -512,13 +575,16 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   const optimistic = useOptimisticThreadState(thread.id);
   const [pending, setPending] = useState(false);
 
-  if (optimistic.optimisticDestination === 'bin') return null;
+  if (optimistic.optimisticDestination === 'bin' || optimistic.optimisticDestination === 'archive')
+    return null;
   if (!summary || !latest) {
     return <RowSkeleton />;
   }
 
   const unread =
     optimistic.optimisticRead !== null ? !optimistic.optimisticRead : summary.hasUnread;
+  const starred =
+    optimistic.optimisticStarred ?? latest.tags?.some((tag) => tag.name === 'STARRED');
   const senderName = latest.sender?.name?.trim().replace(/^['"]|['"]$/g, '') || '';
   const senderText = senderName || latest.sender?.email || '';
   const date = latest.receivedOn ? formatListDate(latest.receivedOn.split('.')[0] || '') : null;
@@ -577,7 +643,7 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
         type="button"
         onFocus={() => onFocusThread(rowKey(thread))}
         onClick={handleClick}
-        aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
+        aria-keyshortcuts="D E S"
         disabled={pending}
         aria-current={isSelected ? 'true' : undefined}
         className={cn(
@@ -610,6 +676,12 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
               <span className={cn('truncate text-sm', unread && 'font-medium')}>
                 {latest.subject}
               </span>
+              {starred && (
+                <Star
+                  aria-label="Starred"
+                  className="size-3.5 shrink-0 fill-yellow-400 text-yellow-500"
+                />
+              )}
               {summary.totalReplies > 1 && (
                 <span className="text-muted-foreground shrink-0 text-xs">
                   {summary.totalReplies}
@@ -640,6 +712,12 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
                   )}
                 >
                   <span className="truncate">{senderText}</span>
+                  {starred && (
+                    <Star
+                      aria-label="Starred"
+                      className="size-3.5 shrink-0 fill-yellow-400 text-yellow-500"
+                    />
+                  )}
                   {unread && <span className="size-2 shrink-0 rounded-full bg-[#006FFE]" />}
                 </span>
                 {date !== null && (

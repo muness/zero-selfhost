@@ -23,14 +23,43 @@ type Row = {
   draft: boolean;
   metadata: Metadata;
   body?: string;
+  pending_star?: boolean | null;
 };
 
 const escapeText = (body: string) =>
   body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
+function renderBody(body: string) {
+  const links = /\b(?:https?:\/\/|mailto:)[^\s<>"'\x00-\x1f]+/gi;
+  let html = '';
+  let cursor = 0;
+  for (const match of body.matchAll(links)) {
+    let url = match[0];
+    const delimited = body[match.index - 1] === '<' && body[match.index + url.length] === '>';
+    if (!delimited) {
+      url = url.replace(/[.,;:!?]+$/, '');
+      if (url.endsWith(')') && url.split(')').length > url.split('(').length) {
+        url = url.slice(0, -1);
+      }
+    }
+    const escaped = escapeText(url);
+    html += escapeText(body.slice(cursor, match.index));
+    html += `<a href="${escaped}">${escaped}</a>`;
+    cursor = match.index + url.length;
+  }
+  return '<pre style="white-space:pre-wrap">' + html + escapeText(body.slice(cursor)) + '</pre>';
+}
+
 function message(row: Row): ParsedMessage {
   const meta = row.metadata;
-  const tags = meta.labels.map((id) => ({ id, name: id, type: 'system' }));
+  const labels =
+    row.pending_star == null
+      ? meta.labels
+      : [
+          ...meta.labels.filter((label) => label !== 'STARRED'),
+          ...(row.pending_star ? ['STARRED'] : []),
+        ];
+  const tags = labels.map((id) => ({ id, name: id, type: 'system' }));
   if (row.unread) tags.push({ id: 'UNREAD', name: 'Unread', type: 'system' });
   return {
     id: row.message_id,
@@ -49,14 +78,19 @@ function message(row: Row): ParsedMessage {
     body: '',
     processedHtml: '',
     blobUrl: '',
-    decodedBody:
-      row.body === undefined
-        ? undefined
-        : '<pre style="white-space:pre-wrap">' + escapeText(row.body) + '</pre>',
+    decodedBody: row.body === undefined ? undefined : renderBody(row.body),
     messageId: meta.internetMessageId,
     isDraft: row.draft,
   };
 }
+
+// Project the most recent queued flag until sync confirms it or reports an error.
+const pendingStar = (conn: ReturnType<typeof createDb>['conn']) => conn`
+  (SELECT CASE WHEN o.last_error IS NULL THEN o.action='star' END FROM mail_store.outbox o
+   WHERE o.account=m.account AND o.message_id=m.message_id
+     AND o.completed_at IS NULL AND o.action IN ('star','unstar')
+   ORDER BY o.id DESC LIMIT 1)
+`;
 
 export async function postgresInbox(
   userId: string,
@@ -107,11 +141,19 @@ export async function postgresInbox(
       conn<InboxRow[]>`
         SELECT m.message_id, m.thread_id, m.received_at, m.unread, m.draft, m.metadata,
                c.id AS connection_id, t.account, t.received_at::text AS sort_at,
-               t.message_count, t.has_draft, t.unread AS thread_unread
+               t.message_count, t.has_draft, t.unread AS thread_unread,
+               ${pendingStar(conn)} AS pending_star
         FROM mail_store.thread t
         JOIN mail_store.message m ON (m.account, m.message_id) = (t.account, t.latest_id)
         JOIN mail0_connection c ON lower(c.email) = t.account AND c.user_id = ${userId}
         WHERE t.in_inbox
+          AND coalesce((
+            SELECT o.action NOT IN ('archive','trash','spam') OR o.last_error IS NOT NULL
+            FROM mail_store.outbox o
+            WHERE o.account=m.account AND o.message_id=m.message_id AND o.completed_at IS NULL
+              AND o.action IN ('archive','trash','spam','inbox')
+            ORDER BY o.id DESC LIMIT 1
+          ),true)
           ${connectionId ? conn`AND c.id = ${connectionId}` : conn``}
           ${boundary ? conn`AND (t.received_at,t.account,t.thread_id) < (${boundary[0]}::timestamptz,${boundary[1]},${boundary[2]})` : conn``}
         ORDER BY t.received_at DESC,t.account DESC,t.thread_id DESC
@@ -213,7 +255,8 @@ export async function postgresThread(userId: string, connectionId: string, threa
   const { conn } = createDb(env.HYPERDRIVE.connectionString);
   try {
     const rows = await conn<Row[]>`
-      SELECT m.message_id,m.thread_id,m.received_at,m.unread,m.draft,m.metadata,m.body,c.id AS connection_id
+      SELECT m.message_id,m.thread_id,m.received_at,m.unread,m.draft,m.metadata,m.body,c.id AS connection_id,
+             ${pendingStar(conn)} AS pending_star
       FROM mail0_connection c
       JOIN mail_store.message m ON m.account=lower(c.email)
       WHERE c.user_id=${userId} AND c.id=${connectionId} AND m.thread_id=${threadId}
@@ -236,7 +279,7 @@ export async function postgresThread(userId: string, connectionId: string, threa
   }
 }
 
-type MailAction = 'trash' | 'read' | 'unread' | 'archive' | 'inbox' | 'spam';
+type MailAction = 'trash' | 'read' | 'unread' | 'archive' | 'inbox' | 'spam' | 'star' | 'unstar';
 
 export async function postgresMailAction(
   userId: string,
@@ -255,12 +298,16 @@ export async function postgresMailAction(
       FROM mail0_connection c
       JOIN mail_store.message m ON m.account=lower(c.email)
       WHERE c.user_id=${userId} AND c.id=${connectionId}
+        AND (${action} <> 'archive' OR m.in_inbox)
         AND c.access_token IS NOT NULL AND c.refresh_token IS NOT NULL
         AND (m.thread_id=ANY(${ids}::text[]) OR m.message_id=ANY(${ids}::text[]))
         AND NOT EXISTS (
           SELECT 1 FROM mail_store.outbox previous
           WHERE previous.account=m.account AND previous.message_id=m.message_id
             AND previous.action=${action} AND previous.completed_at IS NULL
+            AND previous.id = (SELECT max(last.id) FROM mail_store.outbox last
+              WHERE last.account=m.account AND last.message_id=m.message_id
+                AND last.completed_at IS NULL)
         )
       RETURNING id
     `;

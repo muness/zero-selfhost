@@ -14,6 +14,8 @@ export const shortcutSchema = z.object({
 
 export type Shortcut = z.infer<typeof shortcutSchema>;
 export const MOVE_TO_BIN_KEY = 'd';
+export const ARCHIVE_KEY = 'e';
+export const STAR_KEY = 's';
 
 export type ShortcutType = Shortcut['type'];
 
@@ -123,6 +125,20 @@ const threadDisplayShortcuts: Shortcut[] = [
     action: 'delete',
     type: 'single',
     description: 'Move to Bin',
+    scope: 'thread-display',
+  },
+  {
+    keys: [ARCHIVE_KEY],
+    action: 'archiveEmail',
+    type: 'single',
+    description: 'Archive email',
+    scope: 'thread-display',
+  },
+  {
+    keys: [STAR_KEY],
+    action: 'toggleStar',
+    type: 'single',
+    description: 'Star or unstar email',
     scope: 'thread-display',
   },
   {

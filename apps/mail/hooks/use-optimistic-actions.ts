@@ -259,7 +259,7 @@ export function useOptimisticActions() {
   }
 
   const optimisticToggleStar = useCallback(
-    (threadIds: string[], starred: boolean) => {
+    (threadIds: string[], starred: boolean, connectionId?: string) => {
       if (!threadIds.length) return;
 
       const optimisticId = addOptimisticAction({
@@ -274,7 +274,8 @@ export function useOptimisticActions() {
         params: { starred },
         optimisticId,
         execute: async () => {
-          await toggleStar({ ids: threadIds, starred });
+          const result = await toggleStar({ ids: threadIds, starred, connectionId });
+          if (!result.success) throw new Error('Could not update stars');
         },
         undo: () => {
           removeOptimisticAction(optimisticId);
