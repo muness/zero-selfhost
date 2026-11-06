@@ -1,6 +1,7 @@
 import { IMAP_TOKEN_MARKER, isConnectionActive } from './connection-status';
 import type { ImapManagerSettings } from './driver/types';
 import { connection, connectionImap } from '../db/schema';
+import { graphAccessToken } from './graph-access-token';
 import type { DriverRpcDO } from '../routes/agent/rpc';
 import type { LabelStorage } from './mail-label-store';
 import { disposeRpc, scopedRpc } from './scoped-rpc';
@@ -121,6 +122,10 @@ export const connectionToDriver = (
       accessToken: activeConnection.accessToken!,
       refreshToken: activeConnection.refreshToken!,
       email: activeConnection.email,
+      getAccessToken:
+        activeConnection.providerId === 'microsoft'
+          ? () => graphAccessToken(activeConnection.id)
+          : undefined,
     },
     imap: extras.imap,
     storage: extras.storage,

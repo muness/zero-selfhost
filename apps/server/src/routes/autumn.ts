@@ -26,6 +26,12 @@ type AutumnContext = {
 export const autumnApi = new Hono<AutumnContext>()
   .use('*', async (c, next) => {
     const { sessionUser } = c.var;
+    if (sessionUser && !env.AUTUMN_SECRET_KEY) {
+      if (c.req.method === 'POST' && c.req.path === '/api/autumn/customers') {
+        return c.json({ products: [], features: {} });
+      }
+      return c.json({ error: 'Billing is not configured' }, 503);
+    }
     c.set(
       'customerData',
       !sessionUser

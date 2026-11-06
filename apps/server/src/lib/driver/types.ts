@@ -82,7 +82,7 @@ export interface ImapManagerSettings {
 export type ManagerConfig = {
   auth: {
     userId: string;
-    // accountId: string;
+    getAccessToken?: () => Promise<string>;
     accessToken: string;
     refreshToken: string;
     email: string;

@@ -16,32 +16,16 @@ import type { IOutgoingMessage, Label, ParsedMessage } from '../../types';
 import { sanitizeTipTapHtml } from '../sanitize-tip-tap-html';
 import { Client } from '@microsoft/microsoft-graph-client';
 import type { MailManager, ManagerConfig } from './types';
-import { getContext } from 'hono/context-storage';
 import type { CreateDraftData } from '../schemas';
-import type { HonoContext } from '../../ctx';
 import * as he from 'he';
 
 export class OutlookMailManager implements MailManager {
   private graphClient: Client;
 
   constructor(public config: ManagerConfig) {
-    const getAccessToken = async () => {
-      const c = getContext<HonoContext>();
-      const data = await c.var.auth.api.getAccessToken({
-        body: {
-          providerId: 'microsoft',
-          userId: config.auth.userId,
-          // accountId: config.auth.accountId,
-        },
-        headers: c.req.raw.headers,
-      });
-      if (!data.accessToken) throw new Error('Failed to get access token');
-      return data.accessToken;
-    };
-
     this.graphClient = Client.initWithMiddleware({
       authProvider: {
-        getAccessToken,
+        getAccessToken: config.auth.getAccessToken ?? (async () => config.auth.accessToken),
       },
     });
   }
@@ -278,31 +262,21 @@ export class OutlookMailManager implements MailManager {
   }) {
     const { folder, query: q, maxResults = 100, pageToken } = params;
 
-    let folderId = this.getOutlookFolderId(folder);
-    if (!folderId) {
-      folderId = folder;
-    }
-
-    let request = this.graphClient.api(`/me/mailFolders/${folderId}/messages`).top(maxResults);
-
-    // if (q) {
-    //   request = request.search(`"${q}"`);
-    // }
-
-    request = request.select(
-      'id,subject,from,toRecipients,ccRecipients,bccRecipients,sentDateTime,receivedDateTime,isRead,internetMessageId,inferenceClassification,categories,parentFolderId',
-    );
-
-    if (maxResults > 0) {
-      request = request.top(maxResults);
-    }
+    const folderId = this.getOutlookFolderId(folder) ?? folder;
+    let request;
     if (pageToken) {
-      console.warn(
-        'Outlook pagination typically uses @odata.nextLink (full URL). pageToken needs to be handled accordingly.',
-      );
+      const next = new URL(pageToken);
+      if (next.origin !== 'https://graph.microsoft.com') throw new Error('Invalid Outlook page');
+      request = this.graphClient.api(next.href);
+    } else {
+      request = this.graphClient
+        .api(`/me/mailFolders/${encodeURIComponent(folderId)}/messages`)
+        .top(maxResults)
+        .orderby('receivedDateTime desc')
+        .select(
+          'id,subject,from,toRecipients,ccRecipients,bccRecipients,sentDateTime,receivedDateTime,isRead,internetMessageId,inferenceClassification,categories,parentFolderId',
+        );
     }
-
-    // request = request.orderby('receivedDateTime desc');
 
     return this.withErrorHandler(
       'list',

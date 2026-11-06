@@ -132,7 +132,7 @@ const connectionHandlerHook = async (account: Account) => {
     accessToken: account.accessToken,
     refreshToken: account.refreshToken,
     scope: driver.getScope(),
-    expiresAt: new Date(Date.now() + (account.accessTokenExpiresAt?.getTime() || 3600000)),
+    expiresAt: account.accessTokenExpiresAt ?? new Date(Date.now() + 3600000),
   };
 
   const db = await getZeroDB(account.userId);
@@ -160,7 +160,6 @@ const connectionHandlerHook = async (account: Account) => {
 };
 
 export const createAuth = () => {
-  const twilioClient = twilio();
   const dub = new Dub();
 
   return betterAuth({
@@ -175,7 +174,7 @@ export const createAuth = () => {
       bearer(),
       phoneNumber({
         sendOTP: async ({ code, phoneNumber }) => {
-          await twilioClient.messages
+          await twilio().messages
             .send(phoneNumber, `Your verification code is: ${code}, do not share it with anyone.`)
             .catch((error) => {
               console.error('Failed to send OTP', error);

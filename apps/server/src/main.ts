@@ -700,8 +700,9 @@ const api = new Hono<HonoContext>()
       }
     }
 
-    const autumn = new Autumn({ secretKey: env.AUTUMN_SECRET_KEY });
-    c.set('autumn', autumn);
+    if (env.AUTUMN_SECRET_KEY) {
+      c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
+    }
 
     await next();
 

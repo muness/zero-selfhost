@@ -77,6 +77,8 @@ export type ZeroEnv = {
   REACT_SCAN: string;
   MICROSOFT_CLIENT_ID: string;
   MICROSOFT_CLIENT_SECRET: string;
+  MICROSOFT_TENANT_ID?: string;
+  MICROSOFT_IMPORTED_CLIENTS?: string;
   VOICE_SECRET: string;
   ARCADE_API_KEY: string;
   OPENROUTER_API_KEY: string;

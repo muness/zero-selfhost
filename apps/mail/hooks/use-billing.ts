@@ -62,6 +62,7 @@ const PRO_PLANS = ['pro-example', 'pro_annual', 'team', 'enterprise'] as const;
 
 /** Local dev users are treated as paid: Pro with unlimited features. */
 const IS_LOCAL_DEV = import.meta.env.DEV;
+const IS_SELF_HOSTED = import.meta.env.VITE_SELF_HOSTED === 'true';
 
 const UNLIMITED_FEATURE: FeatureState = {
   ...DEFAULT_FEATURES.chatMessages,
@@ -80,11 +81,14 @@ export const useBilling = () => {
   const { attach, track, openBillingPortal } = useAutumn();
 
   useEffect(() => {
-    if (error) signOut();
+    if (error && !IS_SELF_HOSTED) signOut();
   }, [error]);
 
   const { isPro, ...customerFeatures } = useMemo(() => {
     if (IS_LOCAL_DEV) return { isPro: true, ...LOCAL_DEV_FEATURES };
+    if (IS_SELF_HOSTED) {
+      return { isPro: true, ...DEFAULT_FEATURES, connections: UNLIMITED_FEATURE };
+    }
 
     const isPro =
       customer?.products && Array.isArray(customer.products)
@@ -143,7 +147,7 @@ export const useBilling = () => {
   }, [customer]);
 
   return {
-    isLoading,
+    isLoading: !IS_SELF_HOSTED && isLoading,
     customer,
     refetch,
     attach,

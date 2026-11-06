@@ -62,3 +62,4 @@ worker-configuration.d.ts
 tsx-0/
 
 tools.json
+__pycache__/
