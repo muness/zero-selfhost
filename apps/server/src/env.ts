@@ -87,6 +87,10 @@ export type ZeroEnv = {
   MICROSOFT_IMPORTED_CLIENTS?: string;
   VOICE_SECRET: string;
   ARCADE_API_KEY: string;
+  MAIL_AI_BASE_URL?: string;
+  MAIL_AI_API_KEY?: string;
+  MAIL_AI_MODEL?: string;
+  MAIL_AI_MINI_MODEL?: string;
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL?: string;
   OPENROUTER_MINI_MODEL?: string;

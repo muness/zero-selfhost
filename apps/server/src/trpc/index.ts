@@ -1,4 +1,6 @@
 import { type inferRouterInputs, type inferRouterOutputs } from '@trpc/server';
+import { intelligentInboxRouter } from './routes/intelligent-inbox';
+import { mailDelegationRouter } from './routes/mail-delegation';
 import { cookiePreferencesRouter } from './routes/cookies';
 import { connectionsRouter } from './routes/connections';
 import { categoriesRouter } from './routes/categories';
@@ -19,6 +21,8 @@ import { router } from './trpc';
 
 export const appRouter = router({
   ai: aiRouter,
+  intelligentInbox: intelligentInboxRouter,
+  mailDelegation: mailDelegationRouter,
   bimi: bimiRouter,
   brain: brainRouter,
   categories: categoriesRouter,
@@ -45,6 +49,5 @@ export const serverTrpc = () => {
     c,
     sessionUser: c.var.sessionUser,
     auth: c.var.auth,
-    autumn: c.var.autumn,
   });
 };

@@ -13,7 +13,6 @@ import {
   Plus,
   CopyCheckIcon,
   BadgeCheck,
-  BanknoteIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useActiveConnection, useConnections } from '@/hooks/use-connections';
@@ -52,7 +51,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
   const { mutateAsync: setDefaultConnection } = useMutation(
     trpc.connections.setDefault.mutationOptions(),
   );
-  const { openBillingPortal, customer: billingCustomer, isPro } = useBilling();
+  const { isPro } = useBilling();
   const pathname = useLocation().pathname;
   const navigate = useNavigate();
   const isUnifiedActive = pathname === '/mail/unified';
@@ -228,7 +227,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
-                className="ml-3 w-(--radix-dropdown-menu-trigger-width) min-w-56 bg-white font-medium dark:bg-[#131313]"
+                className="w-(--radix-dropdown-menu-trigger-width) ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
                 align="end"
                 side={'bottom'}
                 sideOffset={8}
@@ -360,7 +359,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                 </div>
                 <>
                   <DropdownMenuSeparator className="mt-1" />
-                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pt-1 pb-2 text-[10px]">
+                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
                     <a href="/privacy" className="hover:underline">
                       Privacy
                     </a>
@@ -398,7 +397,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                       </AvatarFallback>
                     </Avatar>
                     {data.connections.length > 1 && (
-                      <CircleCheck className="fill-mainBlue absolute -right-2 -bottom-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
+                      <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
                     )}
                   </div>
                 </div>
@@ -513,14 +512,6 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                   sideOffset={8}
                 >
                   <div className="space-y-1">
-                    {billingCustomer?.stripe_id ? (
-                      <DropdownMenuItem onClick={() => openBillingPortal()}>
-                        <div className="flex items-center gap-2">
-                          <BanknoteIcon size={16} className="opacity-60" />
-                          <p className="text-[13px] opacity-60">Billing</p>
-                        </div>
-                      </DropdownMenuItem>
-                    ) : null}
                     <DropdownMenuItem onClick={handleThemeToggle} className="cursor-pointer">
                       <div className="flex w-full items-center gap-2">
                         {theme === 'dark' ? (
@@ -555,7 +546,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                   </div>
 
                   <DropdownMenuSeparator className="mt-1" />
-                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pt-1 pb-2 text-[10px]">
+                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
                     <a href="/privacy" className="hover:underline">
                       Privacy
                     </a>
@@ -633,7 +624,7 @@ export function NavUser({ compact = false }: { compact?: boolean }) {
                 <BadgeCheck className="h-4 w-4 text-white dark:text-[#141414]" fill="#1D9BF0" />
               ) : null}
             </div>
-            <div className="h-5 max-w-[200px] truncate overflow-hidden text-xs leading-none font-normal text-[#898989]">
+            <div className="h-5 max-w-[200px] overflow-hidden truncate text-xs font-normal leading-none text-[#898989]">
               {activeAccount?.email || session.user.email}
             </div>
             {!isPro && (

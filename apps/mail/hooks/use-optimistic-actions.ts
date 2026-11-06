@@ -158,6 +158,7 @@ export function useOptimisticActions() {
             queryClient.invalidateQueries({
               queryKey: trpc.mail.listUnifiedInbox.infiniteQueryKey(),
             }),
+            queryClient.invalidateQueries({ queryKey: trpc.intelligentInbox.pathKey() }),
           ]);
         }
         const settled = optimisticActionsManager.settleAction(pendingActionId);

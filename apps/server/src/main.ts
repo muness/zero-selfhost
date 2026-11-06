@@ -54,7 +54,6 @@ import type { HonoContext } from './ctx';
 import { createDb, type DB } from './db';
 import { createAuth } from './lib/auth';
 import { aiRouter } from './routes/ai';
-import { Autumn } from 'autumn-js';
 import { appRouter } from './trpc';
 import { cors } from 'hono/cors';
 import { Hono } from 'hono';
@@ -698,10 +697,6 @@ const api = new Hono<HonoContext>()
           c.set('sessionUser', await db.findUser());
         }
       }
-    }
-
-    if (env.AUTUMN_SECRET_KEY) {
-      c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
     }
 
     await next();

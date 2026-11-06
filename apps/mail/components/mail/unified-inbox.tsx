@@ -1,4 +1,5 @@
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { IntelligentInbox, type IntelligenceView, type OpenableMail } from './intelligent-inbox';
 import { actionsByThreadAtom, useOptimisticThreadState } from './optimistic-thread-state';
 import { isHotkeyPressed, useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ZenComposeButton, ZenFolderSelect, ZenNavigation } from './zen-navigation';
@@ -147,6 +148,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     useOptimisticActions();
   const store = useStore();
   const [threadId, setThreadId] = useQueryState('threadId');
+  const [inboxView, setInboxView] = useQueryState('view', { defaultValue: 'inbox' });
   const [, setDraftId] = useQueryState('draftId');
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -159,7 +161,9 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
   const [isCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
-  const keyboardEnabled = !threadId && !isCommandPaletteOpen;
+  const [isComposeOpen] = useQueryState('isComposeOpen');
+  const keyboardEnabled =
+    !threadId && !isCommandPaletteOpen && !isComposeOpen && inboxView === 'all-inbox';
 
   const accounts = useMemo(() => {
     const map = new Map<string, AccountInfo>();
@@ -183,7 +187,7 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
    * account switcher, the unified list itself is kept: it already covers every account.
    */
   const openThread = useCallback(
-    async (thread: UnifiedThread) => {
+    async (thread: OpenableMail) => {
       if (isSwitchingRef.current) return;
       const autoRead = settingsData?.settings?.autoRead ?? true;
       const needsSwitch = thread.connectionId !== activeConnection?.id;
@@ -385,7 +389,40 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
             </div>
             <AccountLegend accounts={[...accounts.values()]} failedIds={failedConnectionIds} />
           </div>
-          {selectedThreads.length > 0 && (
+          <nav
+            aria-label="Inbox views"
+            className="border-border mb-2 flex gap-1 overflow-x-auto border-b"
+          >
+            {(
+              [
+                ['inbox', 'Inbox'],
+                ['all-inbox', 'By date'],
+                ['all-mail', 'All Mail'],
+                ['expenses', 'Expenses'],
+                ['rules', 'Rules'],
+                ['activity', 'Activity'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-current={inboxView === value ? 'page' : undefined}
+                onClick={() => {
+                  void setInboxView(value);
+                  setSelectedKeys(new Set());
+                }}
+                className={cn(
+                  'focus-visible:ring-ring shrink-0 border-b-2 border-transparent px-3 py-2 text-sm focus-visible:ring-2',
+                  inboxView === value
+                    ? 'border-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          {inboxView === 'all-inbox' && selectedThreads.length > 0 && (
             <div className="mb-2 flex items-center gap-2 px-2 text-sm">
               <span aria-live="polite">{selectedThreads.length} selected</span>
               <Tooltip>
@@ -454,56 +491,68 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
         </div>
       </div>
 
-      <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
-        {isLoading ? (
-          <div className="flex flex-col">
-            {Array.from({ length: 8 }, (_, i) => (
-              <RowSkeleton key={i} />
-            ))}
-          </div>
-        ) : query.isError ? (
-          <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
-            <p>{m['common.unifiedInbox.loadFailed']()}</p>
-            <button className="underline" onClick={() => void query.refetch()}>
-              {m['common.unifiedInbox.retry']()}
-            </button>
-          </div>
-        ) : threads.length === 0 ? (
-          <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
-            <EmptyStateIcon width={200} height={200} />
-            <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
-          </div>
-        ) : (
-          <VList
-            ref={vListRef}
-            count={threads.length}
-            overscan={3}
-            itemSize={isDesktop ? 48 : 72}
-            className="scrollbar-none flex-1 overflow-x-hidden"
-            onScroll={maybeLoadMore}
-          >
-            {(index) => {
-              const thread = threads[index];
-              return (
-                <UnifiedThreadRow
-                  key={`${thread.connectionId}:${thread.id}`}
-                  thread={thread}
-                  account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
-                  isSelected={
-                    thread.id === threadId && thread.connectionId === activeConnection?.id
-                  }
-                  isDesktop={isDesktop}
-                  onOpen={openThread}
-                  isFocused={rowKey(thread) === focusedKey}
-                  isChecked={selectedKeys.has(rowKey(thread))}
-                  onFocusThread={setFocusedKey}
-                  onToggleSelected={toggleSelected}
-                />
-              );
-            }}
-          </VList>
-        )}
-      </div>
+      {inboxView !== 'all-inbox' ? (
+        <IntelligentInbox
+          view={
+            (['inbox', 'all-mail', 'expenses', 'rules', 'activity'].includes(inboxView)
+              ? inboxView
+              : 'inbox') as IntelligenceView
+          }
+          onOpen={openThread}
+          enabled={!threadId && !isCommandPaletteOpen && !isComposeOpen}
+        />
+      ) : (
+        <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+          {isLoading ? (
+            <div className="flex flex-col">
+              {Array.from({ length: 8 }, (_, i) => (
+                <RowSkeleton key={i} />
+              ))}
+            </div>
+          ) : query.isError ? (
+            <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
+              <p>{m['common.unifiedInbox.loadFailed']()}</p>
+              <button className="underline" onClick={() => void query.refetch()}>
+                {m['common.unifiedInbox.retry']()}
+              </button>
+            </div>
+          ) : threads.length === 0 ? (
+            <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
+              <EmptyStateIcon width={200} height={200} />
+              <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
+            </div>
+          ) : (
+            <VList
+              ref={vListRef}
+              count={threads.length}
+              overscan={3}
+              itemSize={isDesktop ? 48 : 72}
+              className="scrollbar-none flex-1 overflow-x-hidden"
+              onScroll={maybeLoadMore}
+            >
+              {(index) => {
+                const thread = threads[index];
+                return (
+                  <UnifiedThreadRow
+                    key={`${thread.connectionId}:${thread.id}`}
+                    thread={thread}
+                    account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
+                    isSelected={
+                      thread.id === threadId && thread.connectionId === activeConnection?.id
+                    }
+                    isDesktop={isDesktop}
+                    onOpen={openThread}
+                    isFocused={rowKey(thread) === focusedKey}
+                    isChecked={selectedKeys.has(rowKey(thread))}
+                    onFocusThread={setFocusedKey}
+                    onToggleSelected={toggleSelected}
+                  />
+                );
+              }}
+            </VList>
+          )}
+        </div>
+      )}
     </div>
   );
 }
