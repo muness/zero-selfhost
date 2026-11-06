@@ -446,6 +446,74 @@ async function generatePlan(
   });
   return { id, ...response };
 }
+// A strictly scoped bulk archive can be selected by the store without a model or a ranked sample.
+async function makeBulkArchivePlan(userId: string, text: string, cutoff: number) {
+  const before = new Date(cutoff).toISOString();
+  return withIntelligenceDb(async (sql) => {
+    const rows = await sql<{ account: string; message_ids: string[] }[]>`
+      SELECT m.account, array_agg(m.message_id ORDER BY m.message_id) AS message_ids
+      FROM mail_store.message m
+      WHERE m.in_inbox AND NOT m.draft AND m.received_at < ${before}::timestamptz
+        AND EXISTS (SELECT 1 FROM mail0_connection c
+          WHERE lower(c.email)=m.account AND c.user_id=${userId})
+        AND NOT EXISTS (SELECT 1 FROM mail_store.outbox o WHERE o.account=m.account
+          AND o.message_id=m.message_id AND o.completed_at IS NULL
+          AND o.action IN ('archive','trash','spam','inbox'))
+      GROUP BY m.account ORDER BY m.account`;
+    const count = rows.reduce((total, row) => total + row.message_ids.length, 0);
+    const response = {
+      answer: count
+        ? `Queue archive for ${count} inbox messages received before ${before.slice(0, 10)} UTC. Already queued moves are excluded. Provider delivery continues in Activity.`
+        : 'There are no matching inbox messages without a move already queued.',
+      questions: [],
+      operations: rows.map(({ account, message_ids }) => ({
+        id: crypto.randomUUID(),
+        kind: 'action' as const,
+        action: 'archive' as const,
+        title: `Archive ${message_ids.length} messages in ${account}`,
+        account,
+        messageIds: message_ids,
+      })),
+      results: [] as MailInsight[],
+      appliedOperationIds: [] as string[],
+    };
+    const id = crypto.randomUUID();
+    const saved = { ...response, bulkArchiveBefore: before };
+    await sql`INSERT INTO mail_store.ai_plan (id,user_id,text,response)
+      VALUES (${id},${userId},${text},${JSON.stringify(saved)}::jsonb)`;
+    return { id, ...response };
+  });
+}
+
+async function queueBulkArchive(
+  sql: Sql,
+  userId: string,
+  account: string,
+  messageIds: string[],
+  before: string,
+) {
+  // Use the same per-message lock as individual actions, in a stable order.
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId + ':' + account + ':'} || id, 0))
+    FROM unnest(${messageIds}::text[]) AS ids(id) ORDER BY id`;
+  await sql`
+    WITH queued AS (
+      INSERT INTO mail_store.ai_event (user_id,account,message_id,kind,status,summary,detail)
+      SELECT ${userId},m.account,m.message_id,'archive','queued',
+        'archive · ' || coalesce(nullif(m.metadata->>'subject',''),'Message'), '{}'::jsonb
+      FROM mail_store.message m
+      WHERE m.account=${account} AND m.message_id=ANY(${messageIds}::text[])
+        AND m.in_inbox AND NOT m.draft AND m.received_at < ${before}::timestamptz
+        AND EXISTS (SELECT 1 FROM mail0_connection c
+          WHERE lower(c.email)=m.account AND c.user_id=${userId})
+        AND NOT EXISTS (SELECT 1 FROM mail_store.outbox o WHERE o.account=m.account
+          AND o.message_id=m.message_id AND o.completed_at IS NULL
+          AND o.action IN ('archive','trash','spam','inbox'))
+      RETURNING id,account,message_id
+    )
+    INSERT INTO mail_store.outbox (account,message_id,action,event_id)
+    SELECT account,message_id,'archive',id FROM queued`;
+}
+
 export async function latestPendingPlan(userId: string) {
   return withIntelligenceDb(async (sql) => {
     const [row] = await sql`SELECT id,text,response FROM mail_store.ai_plan
@@ -495,14 +563,26 @@ export async function applyPlan(userId: string, id: string, operationIds: string
         } else {
           if (!operation.account || !operation.action || !operation.messageIds?.length)
             throw new TRPCError({ code: 'BAD_REQUEST', message: 'Incomplete action proposal' });
-          for (const messageId of new Set(operation.messageIds))
-            await performAction(tx, userId, {
-              account: operation.account,
-              messageId,
-              action: operation.action,
-              business: operation.business,
-              receivedBefore,
-            });
+          if (
+            operation.action === 'archive' &&
+            typeof plan.response.bulkArchiveBefore === 'string'
+          ) {
+            await queueBulkArchive(
+              tx,
+              userId,
+              operation.account,
+              operation.messageIds,
+              plan.response.bulkArchiveBefore,
+            );
+          } else
+            for (const messageId of new Set(operation.messageIds))
+              await performAction(tx, userId, {
+                account: operation.account,
+                messageId,
+                action: operation.action,
+                business: operation.business,
+                receivedBefore,
+              });
         }
         applied.add(operation.id);
         count++;
@@ -514,6 +594,15 @@ export async function applyPlan(userId: string, id: string, operationIds: string
 }
 
 export async function makePlan(userId: string, text: string, followUp?: PlanFollowUp) {
+  const cutoff = explicitAgeCutoff(text, Date.now());
+  if (
+    !followUp &&
+    cutoff !== undefined &&
+    /^(?:archive|arvhive) all (?:the )?(?:(?:inbox )?(?:mail|emails?|messages?|stuff) )?(?:older than \d+ weeks?|more than \d+ weeks? old)[.!]?$/i.test(
+      text,
+    )
+  )
+    return makeBulkArchivePlan(userId, text, cutoff);
   const signal = AbortSignal.timeout(50_000);
   try {
     return await generatePlan(userId, text, signal, followUp);
