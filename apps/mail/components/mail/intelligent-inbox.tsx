@@ -168,15 +168,25 @@ export function IntelligentInbox({
   }, [data, hiddenIds]);
   const noise = useMemo(() => [...noiseGroups.values()].map((group) => group[0]), [noiseGroups]);
   const items = useMemo(() => [...attention, ...noise], [attention, noise]);
+  const { openTasks, closedTasks } = useMemo(() => {
+    const openTasks: DelegatedTask[] = [];
+    const closedTasks: DelegatedTask[] = [];
+    for (const task of delegations.data ?? []) {
+      if (task.status === 'accepted' || task.status === 'cancelled') closedTasks.push(task);
+      else openTasks.push(task);
+    }
+    return { openTasks, closedTasks };
+  }, [delegations.data]);
+  const visibleTasks = view === 'activity' ? closedTasks : openTasks;
   const tasksByMessage = useMemo(() => {
     const map = new Map<string, DelegatedTask>();
-    for (const task of delegations.data ?? [])
+    for (const task of openTasks)
       for (const source of task.sources) {
         const key = JSON.stringify([source.account, source.messageId]);
         if (!map.has(key)) map.set(key, task);
       }
     return map;
-  }, [delegations.data]);
+  }, [openTasks]);
   const beginDelegation = (sources: Insight[]) => {
     if (!sources.length) {
       toast.info('Select a source message to delegate.');
@@ -371,14 +381,14 @@ export function IntelligentInbox({
         )}
         {(delegationDraft ||
           activeTaskId ||
-          (delegations.data?.length ?? 0) > 0 ||
-          delegations.isError) && (
+          ((view === 'inbox' || view === 'activity') &&
+            (visibleTasks.length > 0 || delegations.isError))) && (
           <DelegationWorkspace
             draft={delegationDraft}
             clearDraft={() => setDelegationDraft(null)}
             activeTaskId={activeTaskId}
             setActiveTaskId={setActiveTaskId}
-            tasks={delegations.data ?? []}
+            tasks={visibleTasks}
             unavailable={delegations.isError}
           />
         )}
