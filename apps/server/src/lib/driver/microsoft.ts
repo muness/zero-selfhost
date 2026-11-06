@@ -14,6 +14,7 @@ import {
 } from './utils';
 import type { IOutgoingMessage, Label, ParsedMessage } from '../../types';
 import { sanitizeTipTapHtml } from '../sanitize-tip-tap-html';
+import { toThreadListSummary } from '../thread-list-summary';
 import { Client } from '@microsoft/microsoft-graph-client';
 import type { MailManager, ManagerConfig } from './types';
 import type { CreateDraftData } from '../schemas';
@@ -253,6 +254,44 @@ export class OutlookMailManager implements MailManager {
       { email: this.config.auth?.email },
     );
   }
+  async listUnifiedInbox(maxResults: number, cursor: string) {
+    let request = this.graphClient
+      .api('/me/mailFolders/inbox/messages')
+      .top(maxResults)
+      .orderby('receivedDateTime desc')
+      .select(
+        'id,subject,bodyPreview,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,internetMessageId,conversationId,categories',
+      );
+    if (cursor) request = request.filter(`receivedDateTime lt ${new Date(cursor).toISOString()}`);
+    const result: { value: Message[]; '@odata.nextLink'?: string } = await request.get();
+    return {
+      threads: result.value.flatMap((message) => {
+        if (!message.id) return [];
+        const latest = {
+          ...this.parseOutlookMessage(message),
+          body: '',
+          processedHtml: '',
+          blobUrl: '',
+        };
+        latest.tags.unshift({ id: 'INBOX', name: 'Inbox', type: 'system' });
+        return [
+          {
+            id: message.id,
+            historyId: null,
+            summary: toThreadListSummary({
+              latest,
+              messages: [latest],
+              labels: latest.tags,
+              hasUnread: latest.unread,
+              totalReplies: 1,
+            }),
+          },
+        ];
+      }),
+      nextPageToken: result['@odata.nextLink'] ?? null,
+    };
+  }
+
   public list(params: {
     folder: string;
     query?: string;

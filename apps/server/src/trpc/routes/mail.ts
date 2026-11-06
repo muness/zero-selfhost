@@ -3,13 +3,14 @@ import {
   IGetThreadsResponseSchema,
   type IGetThreadsResponse,
 } from '../../lib/driver/types';
+import { connectionToDriver, getZeroAgent, getZeroDB } from '../../lib/server-utils';
 import { updateWritingStyleMatrix } from '../../services/writing-style-service';
 import { activeDriverProcedure, router, privateProcedure } from '../trpc';
 import { pickForwardedAttachments } from '../../lib/forward-attachments';
 import { getGmailQuotaGovernor } from '../../lib/gmail-quota-client';
 import { withThreadListSummaries } from '../../lib/thread-list-page';
 import { isConnectionActive } from '../../lib/connection-status';
-import { getZeroAgent, getZeroDB } from '../../lib/server-utils';
+import { OutlookMailManager } from '../../lib/driver/microsoft';
 import { processEmailHtml } from '../../lib/email-processor';
 import { withServerTiming } from '../../lib/server-timing';
 import { defaultPageSize, FOLDERS } from '../../lib/utils';
@@ -262,12 +263,20 @@ export const mailRouter = router({
       const fallbackKey = cursor || new Date().toISOString();
       const results = await Promise.allSettled(
         connections.map(async (connection) => {
-          const agent = await getZeroAgent(connection.id, { initializeAuth: false });
-          const page = await agent.listThreadsWithSummaries({
-            folder: FOLDERS.INBOX,
-            maxResults,
-            pageToken: cursor,
-          });
+          const readInbox = async () => {
+            if (connection.providerId === 'microsoft') {
+              const driver = connectionToDriver(connection);
+              if (driver instanceof OutlookMailManager)
+                return driver.listUnifiedInbox(maxResults, cursor);
+            }
+            const agent = await getZeroAgent(connection.id, { initializeAuth: false });
+            return agent.listThreadsWithSummaries({
+              folder: FOLDERS.INBOX,
+              maxResults,
+              pageToken: cursor,
+            });
+          };
+          const page = await readInbox();
           // Threads arrive sorted newest-first; a thread without a summary inherits its
           // predecessor's timestamp so it keeps its place in the merged order.
           let previousKey = fallbackKey;
