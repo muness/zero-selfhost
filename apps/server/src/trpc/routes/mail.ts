@@ -383,23 +383,27 @@ export const mailRouter = router({
         ? await (await getZeroDB(ctx.sessionUser.id)).findUserConnection(input.connectionId)
         : ctx.activeConnection;
       if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
-      const agent = await getZeroAgent(target.id);
       const { threadId, addLabels, removeLabels } = input;
 
-      console.log(`Server: updateThreadLabels called for thread ${threadId}`);
-      console.log(`Adding labels: ${addLabels.join(', ')}`);
-      console.log(`Removing labels: ${removeLabels.join(', ')}`);
-
-      const result = await agent.normalizeIds(threadId);
-      const { threadIds } = result;
-
-      if (threadIds.length) {
-        await agent.modifyLabels(threadIds, addLabels, removeLabels);
-        return { success: true };
+      try {
+        const agent = await getZeroAgent(target.id);
+        const { threadIds } = await agent.normalizeIds(threadId);
+        if (threadIds.length) {
+          await agent.modifyLabels(threadIds, addLabels, removeLabels);
+          return { success: true };
+        }
+        return { success: false, error: 'No label changes specified' };
+      } catch (cause) {
+        // The active-driver middleware may mark the default connection disconnected.
+        // Errors from an explicitly targeted different mailbox must never do that.
+        if (target.id !== ctx.activeConnection.id)
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Could not update the selected mailbox',
+            cause,
+          });
+        throw cause;
       }
-
-      console.log('Server: No label changes specified');
-      return { success: false, error: 'No label changes specified' };
     }),
 
   toggleStar: activeDriverProcedure
