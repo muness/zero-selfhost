@@ -3,8 +3,18 @@ private HTTPS origin. The reverse proxy must send traffic to the loopback
 ingress on port 8300. Only the reverse proxy needs to publish a browser port.
 The image does not need the origin or any provider credentials at build time.
 
-Use a URI-safe `POSTGRES_PASSWORD`. Set `ZERO_IMAGE` to the versioned image
-built from this repository. Persist the Zero state, PostgreSQL, and Valkey
+Build on an operator-controlled Linux builder with Docker. Use the commit SHA
+as the image tag, and move the archive to the deployment host.
+
+```sh
+image="zero-selfhost:$(git rev-parse HEAD)"
+docker build --file docker/self-host/Dockerfile --tag "$image" .
+docker image save "$image" | gzip -1 > zero-selfhost.tar.gz
+```
+
+On the deployment host, load the archive with `docker image load -i zero-selfhost.tar.gz`.
+Set `ZERO_IMAGE` to the loaded tag and use a URI-safe `POSTGRES_PASSWORD`.
+Persist the Zero state, PostgreSQL, and Valkey
 volumes. Back up Zero's state with its database because it holds the session
 and credential encryption keys.
 

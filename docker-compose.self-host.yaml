@@ -1,6 +1,6 @@
 services:
   zero:
-    image: ${ZERO_IMAGE:?Set the image built by the self-host workflow}
+    image: ${ZERO_IMAGE:?Set the locally built image tag}
     environment:
       ZERO_ORIGIN: ${ZERO_ORIGIN:?Set the private HTTPS URL}
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?Set a URI-safe PostgreSQL password}@postgres:5432/zero
