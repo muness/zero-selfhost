@@ -13,6 +13,8 @@ export const shortcutSchema = z.object({
 });
 
 export type Shortcut = z.infer<typeof shortcutSchema>;
+export const MOVE_TO_BIN_KEY = 'd';
+
 export type ShortcutType = Shortcut['type'];
 
 /**
@@ -124,8 +126,8 @@ const threadDisplayShortcuts: Shortcut[] = [
     scope: 'thread-display',
   },
   {
-    keys: ['delete'],
-    action: 'trashWithDelete',
+    keys: [MOVE_TO_BIN_KEY],
+    action: 'moveToBin',
     type: 'single',
     description: 'Move to Bin',
     scope: 'thread-display',
@@ -263,15 +265,8 @@ const mailListShortcuts: Shortcut[] = [
     scope: 'mail-list',
   },
   {
-    keys: ['d'],
-    action: 'bulkDelete',
-    type: 'single',
-    description: 'Bulk delete',
-    scope: 'mail-list',
-  },
-  {
-    keys: ['delete'],
-    action: 'trashWithDelete',
+    keys: [MOVE_TO_BIN_KEY],
+    action: 'moveToBin',
     type: 'single',
     description: 'Move to Bin',
     scope: 'mail-list',

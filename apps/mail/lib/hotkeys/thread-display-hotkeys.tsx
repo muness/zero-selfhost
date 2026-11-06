@@ -41,7 +41,7 @@ export function ThreadDisplayHotkeys() {
       setMode('replyAll');
       setActiveReplyId(thread?.latest?.id ?? '');
     },
-    trashWithDelete: () => {
+    moveToBin: () => {
       if (!openThreadId || !thread || !connection?.id || params.folder === 'bin') return;
       moveTo({
         threadIds: [openThreadId],

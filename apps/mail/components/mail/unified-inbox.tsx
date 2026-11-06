@@ -1,4 +1,5 @@
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { isHotkeyPressed, useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ZenComposeButton, ZenFolderSelect, ZenNavigation } from './zen-navigation';
 import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -13,9 +14,9 @@ import { useUnifiedInbox } from '@/hooks/use-unified-inbox';
 import AIToggleButton from '@/components/ai-toggle-button';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import { useHotkeysContext } from 'react-hotkeys-hook';
 import { useAiEnabled } from '@/hooks/use-ai-enabled';
 import { useTRPC } from '@/providers/query-provider';
+import { MOVE_TO_BIN_KEY } from '@/config/shortcuts';
 import AISidebar from '@/components/ui/ai-sidebar';
 import { useSettings } from '@/hooks/use-settings';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -42,6 +43,8 @@ const ACCOUNT_COLORS = [
 ];
 
 const LOAD_MORE_THRESHOLD = 10;
+const rowKey = (thread: { connectionId: string; id: string }) =>
+  JSON.stringify([thread.connectionId, thread.id]);
 
 type UnifiedThread = ReturnType<typeof useUnifiedInbox>['threads'][number];
 type UnifiedConnection = ReturnType<typeof useUnifiedInbox>['connections'][number];
@@ -139,6 +142,10 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const { query, threads, connections, failedConnectionIds, loadMore } = useUnifiedInbox();
   const vListRef = useRef<VListHandle>(null);
   const isSwitchingRef = useRef(false);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [isCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
+  const keyboardEnabled = !threadId && !isCommandPaletteOpen;
 
   const accounts = useMemo(() => {
     const map = new Map<string, AccountInfo>();
@@ -230,6 +237,102 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     return () => cancelAnimationFrame(frame);
   }, [maybeLoadMore]);
 
+  const focusedIndex =
+    focusedKey === null ? -1 : threads.findIndex((thread) => rowKey(thread) === focusedKey);
+  const selectedThreads = threads.filter((thread) => selectedKeys.has(rowKey(thread)));
+  const toggleSelected = useCallback((thread: UnifiedThread) => {
+    const key = rowKey(thread);
+    setFocusedKey(key);
+    setSelectedKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const trashThreads = (items: UnifiedThread[]) => {
+    const byAccount = new Map<string, string[]>();
+    for (const thread of items) {
+      const ids = byAccount.get(thread.connectionId) ?? [];
+      ids.push(thread.id);
+      byAccount.set(thread.connectionId, ids);
+    }
+    for (const [connection, ids] of byAccount)
+      optimisticMoveThreadsTo(ids, 'inbox', 'bin', connection);
+    setSelectedKeys(new Set());
+    // Keep the cursor near the next available message.
+    const removed = new Set(items.map(rowKey));
+    const next =
+      threads.slice(Math.max(0, focusedIndex)).find((thread) => !removed.has(rowKey(thread))) ??
+      threads.findLast((thread) => !removed.has(rowKey(thread)));
+    setFocusedKey(next ? rowKey(next) : null);
+  };
+  const moveFocus = (delta: number) => {
+    if (!threads.length) return;
+    const index =
+      focusedIndex < 0
+        ? delta < 0
+          ? threads.length - 1
+          : 0
+        : Math.min(threads.length - 1, Math.max(0, focusedIndex + delta));
+    setFocusedKey(rowKey(threads[index]));
+    vListRef.current?.scrollToIndex(index, { align: 'nearest' });
+  };
+  const handleListKey = (event: KeyboardEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      isHotkeyPressed('g')
+    )
+      return;
+    if (
+      event.key === 'ArrowDown' ||
+      event.key === 'j' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'k'
+    ) {
+      event.preventDefault();
+      moveFocus(event.key === 'ArrowDown' || event.key === 'j' ? 1 : -1);
+      return;
+    }
+    if (event.repeat) return;
+    if (event.key === 'Escape' && selectedThreads.length) {
+      event.preventDefault();
+      setSelectedKeys(new Set());
+      return;
+    }
+    const thread = threads[focusedIndex];
+    if (event.key === MOVE_TO_BIN_KEY && (selectedThreads.length || thread)) {
+      event.preventDefault();
+      trashThreads(selectedThreads.length ? selectedThreads : [thread]);
+    } else if (thread && (event.key === 'x' || event.key === ' ' || event.key === 'Enter')) {
+      // Let native buttons/checkboxes handle Space and Enter when tabbed to directly.
+      if (
+        event.key !== 'x' &&
+        event.target instanceof HTMLElement &&
+        event.target.closest('button,input,a,[role="checkbox"]')
+      )
+        return;
+      event.preventDefault();
+      if (event.key === 'Enter') void openThread(thread);
+      else toggleSelected(thread);
+    }
+  };
+  useHotkeys(
+    'up,down,j,k,x,space,enter,escape,' + MOVE_TO_BIN_KEY,
+    handleListKey,
+    {
+      enabled: keyboardEnabled,
+      scopes: ['mail-list'],
+      useKey: true,
+    },
+    [handleListKey],
+  );
+
   const showAccountBadge = accounts.size > 1;
 
   return (
@@ -245,6 +348,33 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
             </div>
             <AccountLegend accounts={[...accounts.values()]} failedIds={failedConnectionIds} />
           </div>
+          {selectedThreads.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 px-2 text-sm">
+              <span aria-live="polite">{selectedThreads.length} selected</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
+                    onClick={() => trashThreads(selectedThreads)}
+                  >
+                    {m['common.mail.moveToBin']()}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {m['common.mail.moveToBin']()} · {MOVE_TO_BIN_KEY.toUpperCase()}
+                </TooltipContent>
+              </Tooltip>
+              <button
+                type="button"
+                className="text-muted-foreground hover:underline"
+                onClick={() => setSelectedKeys(new Set())}
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
           {failedAccounts.length > 0 && (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
               <ExclamationCircle className="h-3.5 w-3.5 shrink-0 fill-amber-500" />
@@ -301,9 +431,10 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
                   }
                   isDesktop={isDesktop}
                   onOpen={openThread}
-                  onTrash={(thread) =>
-                    optimisticMoveThreadsTo([thread.id], 'inbox', 'bin', thread.connectionId)
-                  }
+                  isFocused={rowKey(thread) === focusedKey}
+                  isChecked={selectedKeys.has(rowKey(thread))}
+                  onFocusThread={setFocusedKey}
+                  onToggleSelected={toggleSelected}
                 />
               );
             }}
@@ -357,7 +488,10 @@ type UnifiedThreadRowProps = {
   isSelected: boolean;
   isDesktop: boolean;
   onOpen: (thread: UnifiedThread) => Promise<void>;
-  onTrash: (thread: UnifiedThread) => void;
+  isFocused: boolean;
+  isChecked: boolean;
+  onFocusThread: (key: string) => void;
+  onToggleSelected: (thread: UnifiedThread) => void;
 };
 
 const UnifiedThreadRow = memo(function UnifiedThreadRow({
@@ -366,7 +500,10 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   isSelected,
   isDesktop,
   onOpen,
-  onTrash,
+  isFocused,
+  isChecked,
+  onFocusThread,
+  onToggleSelected,
 }: UnifiedThreadRowProps) {
   const summary = thread.summary;
   const latest = summary?.latest;
@@ -421,28 +558,30 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   );
 
   return (
-    <div className="my-1 select-none">
+    <div
+      className={cn(
+        'mx-1 my-1 flex select-none items-center rounded-lg',
+        isChecked && 'bg-muted',
+        isFocused && 'ring-ring ring-1 ring-inset',
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={isChecked}
+        className="ml-3 size-4 shrink-0 cursor-pointer"
+        aria-label={`Select ${latest.subject || 'thread'}`}
+        onFocus={() => onFocusThread(rowKey(thread))}
+        onChange={() => onToggleSelected(thread)}
+      />
       <button
         type="button"
+        onFocus={() => onFocusThread(rowKey(thread))}
         onClick={handleClick}
-        onKeyDown={(event) => {
-          if (
-            event.key !== 'Delete' ||
-            event.repeat ||
-            event.altKey ||
-            event.ctrlKey ||
-            event.metaKey ||
-            event.shiftKey
-          )
-            return;
-          event.preventDefault();
-          onTrash(thread);
-        }}
-        aria-keyshortcuts="Delete"
+        aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
         disabled={pending}
         aria-current={isSelected ? 'true' : undefined}
         className={cn(
-          'hover:bg-offsetLight dark:hover:bg-primary/5 mx-1 flex w-[calc(100%-0.5rem)] cursor-pointer items-center rounded-lg py-2 text-left',
+          'hover:bg-offsetLight dark:hover:bg-primary/5 flex min-w-0 flex-1 cursor-pointer items-center rounded-lg py-2 text-left',
           isSelected && 'bg-offsetLight dark:bg-primary/5',
           pending && 'opacity-60',
         )}
