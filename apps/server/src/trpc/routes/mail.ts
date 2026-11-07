@@ -4,6 +4,7 @@ import {
   postgresMailCounts,
   postgresMessageAttachments,
   postgresThread,
+  postgresSent,
 } from '../../lib/postgres-mail';
 import {
   IGetThreadResponseSchema,
@@ -138,6 +139,20 @@ export const mailRouter = router({
             Math.min(100, Math.max(1, Math.floor(maxResults))),
             cursor,
             activeConnection.id,
+          ),
+        );
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        folder === FOLDERS.SENT &&
+        !q &&
+        labelIds.every((id) => id === 'SENT')
+      )
+        return withServerTiming(ctx.c, 'sent_postgres', () =>
+          postgresSent(
+            ctx.sessionUser.id,
+            activeConnection.id,
+            Math.min(100, Math.max(1, Math.floor(maxResults))),
+            cursor,
           ),
         );
       const agent = await getZeroAgent(activeConnection.id, {
