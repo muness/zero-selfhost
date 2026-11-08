@@ -1,5 +1,6 @@
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { IntelligentInbox, type IntelligenceView, type OpenableMail } from './intelligent-inbox';
+import { Inbox, Mail, Settings2, Receipt, ListChecks, Pencil, Search, Star } from 'lucide-react';
 import { actionsByThreadAtom, useOptimisticThreadState } from './optimistic-thread-state';
 import { isHotkeyPressed, useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ZenComposeButton, ZenFolderSelect, ZenNavigation } from './zen-navigation';
@@ -26,7 +27,6 @@ import { cn, formatListDate } from '@/lib/utils';
 import { VList, type VListHandle } from 'virtua';
 import { useSession } from '@/lib/auth-client';
 import { BimiAvatar } from '../ui/bimi-avatar';
-import { Search, Star } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
@@ -152,6 +152,8 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const [mailQuery, setMailQuery] = useQueryState('q', { defaultValue: '' });
   const [searchText, setSearchText] = useState(mailQuery);
   const [, setDraftId] = useQueryState('draftId');
+  const [, setTo] = useQueryState('to');
+  const [, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const { mutateAsync: setDefaultConnection } = useMutation(
@@ -378,210 +380,283 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
 
   const showAccountBadge = accounts.size > 1;
 
-  return (
-    <div className="flex h-full w-full flex-col">
-      <div className="z-15 sticky top-0 flex items-center justify-between gap-1.5 p-2 pb-0">
-        <div className="w-full">
-          <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
-            <ZenNavigation />
-            <div className="bg-muted flex shrink-0 items-center gap-0.5 rounded-lg p-0.5">
-              <ZenComposeButton />
-              <div className="bg-border mx-1 h-4 w-px" />
-              <ZenFolderSelect />
-            </div>
-          </div>
-          <form
-            role="search"
-            className="mx-auto mb-2 flex w-full max-w-5xl gap-2 px-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void setMailQuery(searchText.trim());
-              void setInboxView('all-mail');
-            }}
-          >
-            <input
-              type="search"
-              aria-label="Search all mail"
-              placeholder="Search all accounts, including archived mail…"
-              maxLength={500}
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              className="border-border bg-background focus-visible:ring-ring min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-            />
-            <button
-              type="submit"
-              className="border-border hover:bg-muted flex items-center gap-2 rounded-lg border px-3 text-sm"
-            >
-              <Search className="size-4" aria-hidden />
-              Search
-            </button>
-          </form>
-          <nav
-            aria-label="Inbox views"
-            className="border-border mb-2 flex gap-1 overflow-x-auto border-b"
-          >
-            {(
-              [
-                ['inbox', 'Inbox'],
-                ['all-inbox', 'By date'],
-                ['all-mail', 'All Mail'],
-                ['expenses', 'Expenses'],
-                ['rules', 'Rules'],
-                ['activity', 'Activity'],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                aria-current={inboxView === value ? 'page' : undefined}
-                onClick={() => {
-                  void setInboxView(value);
-                  setSelectedKeys(new Set());
-                }}
-                className={cn(
-                  'focus-visible:ring-ring shrink-0 border-b-2 border-transparent px-3 py-2 text-sm focus-visible:ring-2',
-                  inboxView === value
-                    ? 'border-foreground font-medium'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-          {inboxView === 'all-inbox' && selectedThreads.length > 0 && (
-            <div className="mb-2 flex items-center gap-2 px-2 text-sm">
-              <span aria-live="polite">{selectedThreads.length} selected</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="hover:bg-muted rounded px-2 py-1"
-                    aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
-                    onClick={() => moveThreads(selectedThreads, 'bin')}
-                  >
-                    {m['common.mail.moveToBin']()}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {m['common.mail.moveToBin']()} · {MOVE_TO_BIN_KEY.toUpperCase()}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="hover:bg-muted rounded px-2 py-1"
-                    aria-keyshortcuts="E"
-                    onClick={() => moveThreads(selectedThreads, 'archive')}
-                  >
-                    {m['common.threadDisplay.archive']()}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>{m['common.threadDisplay.archive']()} · E</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="hover:bg-muted rounded px-2 py-1"
-                    aria-keyshortcuts="S"
-                    onClick={() => starThreads(selectedThreads)}
-                  >
-                    Star / unstar
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Star / unstar · S</TooltipContent>
-              </Tooltip>
-              <button
-                type="button"
-                className="text-muted-foreground hover:underline"
-                onClick={() => setSelectedKeys(new Set())}
-              >
-                Clear selection
-              </button>
-            </div>
-          )}
-          {failedAccounts.length > 0 && (
-            <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
-              <ExclamationCircle className="h-3.5 w-3.5 shrink-0 fill-amber-500" />
-              <span className="min-w-0 flex-1 truncate">
-                {m['common.unifiedInbox.accountsUnavailable']({
-                  accounts: failedAccounts.map((a) => a.email).join(', '),
-                })}
-              </span>
-              <Link to="/settings/connections" className="shrink-0 underline">
-                {m['common.unifiedInbox.manageConnections']()}
-              </Link>
-            </div>
-          )}
-        </div>
-      </div>
+  const navigation = [
+    { value: 'inbox', label: 'Inbox', icon: Inbox },
+    { value: 'all-mail', label: 'Mail', icon: Mail },
+    { value: 'rules', label: 'Rules', icon: Settings2 },
+    { value: 'expenses', label: 'Expenses', icon: Receipt },
+    { value: 'activity', label: 'Activity', icon: ListChecks },
+  ] as const;
+  const activeView = inboxView === 'all-inbox' ? 'all-mail' : inboxView;
+  const selectView = (value: string) => {
+    void setInboxView(value);
+    setSelectedKeys(new Set());
+  };
+  const compose = () => {
+    void setDraftId(null);
+    void setTo(null);
+    void setMode(null);
+    void setActiveReplyId(null);
+    void setIsComposeOpen('true');
+  };
 
-      {inboxView !== 'all-inbox' ? (
-        <IntelligentInbox
-          view={
-            (['inbox', 'all-mail', 'expenses', 'rules', 'activity'].includes(inboxView)
-              ? inboxView
-              : 'inbox') as IntelligenceView
-          }
-          searchQuery={mailQuery}
-          onOpen={openThread}
-          enabled={!threadId && !isCommandPaletteOpen && !isComposeOpen}
-        />
-      ) : (
-        <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
-          {isLoading ? (
-            <div className="flex flex-col">
-              {Array.from({ length: 8 }, (_, i) => (
-                <RowSkeleton key={i} />
-              ))}
-            </div>
-          ) : query.isError ? (
-            <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
-              <p>{m['common.unifiedInbox.loadFailed']()}</p>
-              <button className="underline" onClick={() => void query.refetch()}>
-                {m['common.unifiedInbox.retry']()}
-              </button>
-            </div>
-          ) : threads.length === 0 ? (
-            <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
-              <EmptyStateIcon width={200} height={200} />
-              <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
-            </div>
-          ) : (
-            <VList
-              ref={vListRef}
-              count={threads.length}
-              overscan={3}
-              itemSize={isDesktop ? 48 : 72}
-              className="scrollbar-none flex-1 overflow-x-hidden"
-              onScroll={maybeLoadMore}
+  return (
+    <div className="flex h-full w-full overflow-hidden">
+      <aside
+        className="border-border bg-sidebar hidden w-52 shrink-0 flex-col border-r px-3 py-5 md:flex"
+        aria-label="Main navigation"
+      >
+        <div className="px-2 text-xl font-semibold tracking-tight">Zero</div>
+        <button
+          type="button"
+          onClick={compose}
+          className="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring mt-6 flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+        >
+          <Pencil className="size-4" aria-hidden /> Compose
+        </button>
+        <nav aria-label="Inbox views" className="mt-6 space-y-1">
+          {navigation.map(({ value, label, icon: Icon }) => (
+            <button
+              key={value}
+              type="button"
+              aria-current={activeView === value ? 'page' : undefined}
+              onClick={() => selectView(value)}
+              className={cn(
+                'focus-visible:ring-ring flex min-h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2',
+                activeView === value
+                  ? 'bg-muted text-foreground font-medium'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
             >
-              {(index) => {
-                const thread = threads[index];
-                return (
-                  <UnifiedThreadRow
-                    key={`${thread.connectionId}:${thread.id}`}
-                    thread={thread}
-                    account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
-                    isSelected={
-                      thread.id === threadId && thread.connectionId === activeConnection?.id
-                    }
-                    isDesktop={isDesktop}
-                    searchQuery={mailQuery}
-                    onOpen={openThread}
-                    isFocused={rowKey(thread) === focusedKey}
-                    isChecked={selectedKeys.has(rowKey(thread))}
-                    onFocusThread={setFocusedKey}
-                    onToggleSelected={toggleSelected}
-                  />
-                );
-              }}
-            </VList>
-          )}
+              <Icon className="size-4 shrink-0" aria-hidden />
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className="border-border mt-auto space-y-3 border-t pt-4">
+          <ZenNavigation />
+          <div className="text-muted-foreground px-1 text-xs">Account folders</div>
+          <ZenFolderSelect />
         </div>
-      )}
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="z-15 sticky top-0 flex items-center justify-between gap-1.5 p-2 pb-0 md:px-6 md:pt-5">
+          <div className="w-full">
+            <div className="flex items-center justify-between gap-2 pb-3">
+              <h1 className="hidden text-2xl font-semibold tracking-tight md:block">
+                {navigation.find((item) => item.value === activeView)?.label ?? 'Inbox'}
+              </h1>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 md:hidden">
+                <ZenNavigation />
+              </div>
+              <div className="bg-muted flex shrink-0 items-center gap-0.5 rounded-lg p-0.5 md:hidden">
+                <ZenComposeButton />
+                <div className="bg-border mx-1 h-4 w-px" />
+                <ZenFolderSelect />
+              </div>
+            </div>
+            <form
+              role="search"
+              className="mx-auto mb-2 flex w-full max-w-5xl gap-2 px-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void setMailQuery(searchText.trim());
+                void setInboxView('all-mail');
+              }}
+            >
+              <input
+                type="search"
+                aria-label="Search all mail"
+                placeholder="Search all accounts, including archived mail…"
+                maxLength={500}
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                className="border-border bg-background focus-visible:ring-ring min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+              />
+              <button
+                type="submit"
+                className="border-border hover:bg-muted flex items-center gap-2 rounded-lg border px-3 text-sm"
+              >
+                <Search className="size-4" aria-hidden />
+                Search
+              </button>
+            </form>
+            <nav aria-label="Inbox views" className="border-border mb-2 flex border-b md:hidden">
+              {navigation.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-current={activeView === value ? 'page' : undefined}
+                  onClick={() => selectView(value)}
+                  className={cn(
+                    'focus-visible:ring-ring min-h-11 min-w-0 flex-1 border-b-2 border-transparent px-1 py-2.5 text-xs focus-visible:outline-none focus-visible:ring-2',
+                    activeView === value
+                      ? 'border-foreground font-medium'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+            {(inboxView === 'all-mail' || inboxView === 'all-inbox') && (
+              <nav aria-label="Mail views" className="mb-2 flex gap-1 px-1">
+                {(
+                  [
+                    ['all-mail', 'All mail'],
+                    ['all-inbox', 'Inbox by date'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-current={inboxView === value ? 'page' : undefined}
+                    onClick={() => selectView(value)}
+                    className={cn(
+                      'focus-visible:ring-ring min-h-9 rounded-lg px-3 text-sm focus-visible:outline-none focus-visible:ring-2',
+                      inboxView === value
+                        ? 'bg-muted font-medium'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </nav>
+            )}
+            {inboxView === 'all-inbox' && selectedThreads.length > 0 && (
+              <div className="mb-2 flex items-center gap-2 px-2 text-sm">
+                <span aria-live="polite">{selectedThreads.length} selected</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="hover:bg-muted rounded px-2 py-1"
+                      aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
+                      onClick={() => moveThreads(selectedThreads, 'bin')}
+                    >
+                      {m['common.mail.moveToBin']()}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {m['common.mail.moveToBin']()} · {MOVE_TO_BIN_KEY.toUpperCase()}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="hover:bg-muted rounded px-2 py-1"
+                      aria-keyshortcuts="E"
+                      onClick={() => moveThreads(selectedThreads, 'archive')}
+                    >
+                      {m['common.threadDisplay.archive']()}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{m['common.threadDisplay.archive']()} · E</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="hover:bg-muted rounded px-2 py-1"
+                      aria-keyshortcuts="S"
+                      onClick={() => starThreads(selectedThreads)}
+                    >
+                      Star / unstar
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Star / unstar · S</TooltipContent>
+                </Tooltip>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:underline"
+                  onClick={() => setSelectedKeys(new Set())}
+                >
+                  Clear selection
+                </button>
+              </div>
+            )}
+            {failedAccounts.length > 0 && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                <ExclamationCircle className="h-3.5 w-3.5 shrink-0 fill-amber-500" />
+                <span className="min-w-0 flex-1 truncate">
+                  {m['common.unifiedInbox.accountsUnavailable']({
+                    accounts: failedAccounts.map((a) => a.email).join(', '),
+                  })}
+                </span>
+                <Link to="/settings/connections" className="shrink-0 underline">
+                  {m['common.unifiedInbox.manageConnections']()}
+                </Link>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {inboxView !== 'all-inbox' ? (
+          <IntelligentInbox
+            view={
+              (['inbox', 'all-mail', 'expenses', 'rules', 'activity'].includes(inboxView)
+                ? inboxView
+                : 'inbox') as IntelligenceView
+            }
+            searchQuery={mailQuery}
+            onOpen={openThread}
+            enabled={!threadId && !isCommandPaletteOpen && !isComposeOpen}
+          />
+        ) : (
+          <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+            {isLoading ? (
+              <div className="flex flex-col">
+                {Array.from({ length: 8 }, (_, i) => (
+                  <RowSkeleton key={i} />
+                ))}
+              </div>
+            ) : query.isError ? (
+              <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
+                <p>{m['common.unifiedInbox.loadFailed']()}</p>
+                <button className="underline" onClick={() => void query.refetch()}>
+                  {m['common.unifiedInbox.retry']()}
+                </button>
+              </div>
+            ) : threads.length === 0 ? (
+              <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
+                <EmptyStateIcon width={200} height={200} />
+                <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
+              </div>
+            ) : (
+              <VList
+                ref={vListRef}
+                count={threads.length}
+                overscan={3}
+                itemSize={isDesktop ? 48 : 72}
+                className="scrollbar-none flex-1 overflow-x-hidden"
+                onScroll={maybeLoadMore}
+              >
+                {(index) => {
+                  const thread = threads[index];
+                  return (
+                    <UnifiedThreadRow
+                      key={`${thread.connectionId}:${thread.id}`}
+                      thread={thread}
+                      account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
+                      isSelected={
+                        thread.id === threadId && thread.connectionId === activeConnection?.id
+                      }
+                      isDesktop={isDesktop}
+                      onOpen={openThread}
+                      isFocused={rowKey(thread) === focusedKey}
+                      isChecked={selectedKeys.has(rowKey(thread))}
+                      onFocusThread={setFocusedKey}
+                      onToggleSelected={toggleSelected}
+                    />
+                  );
+                }}
+              </VList>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

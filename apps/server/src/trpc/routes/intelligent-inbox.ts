@@ -7,6 +7,8 @@ import {
   searchInsights,
   listRules,
   listActivity,
+  listMoveActivity,
+  retryMove,
   listExpenses,
   performAction,
   makePlan,
@@ -54,6 +56,16 @@ export const intelligentInboxRouter = router({
       };
     }),
   ),
+  moveActivity: privateProcedure.query(({ ctx }) =>
+    withIntelligenceDb((sql) => listMoveActivity(sql, ctx.sessionUser.id)),
+  ),
+  retryMove: privateProcedure
+    .input(z.object({ account: z.string().email(), threadId: z.string().min(1) }))
+    .mutation(({ ctx, input }) =>
+      withIntelligenceDb((sql) =>
+        retryMove(sql, ctx.sessionUser.id, input.account.toLowerCase(), input.threadId),
+      ),
+    ),
   search: privateProcedure
     .input(
       z.object({
@@ -86,12 +98,15 @@ export const intelligentInboxRouter = router({
     .input(
       z.object({
         text: z.string().trim().min(1).max(12000),
+        context: z.object({ account: z.string().email(), messageId: z.string().min(1) }).optional(),
         followUp: z
           .object({ planId: z.string().uuid(), question: z.number().int().nonnegative() })
           .optional(),
       }),
     )
-    .mutation(({ ctx, input }) => makePlan(ctx.sessionUser.id, input.text, input.followUp)),
+    .mutation(({ ctx, input }) =>
+      makePlan(ctx.sessionUser.id, input.text, input.followUp, input.context),
+    ),
   applyPlan: privateProcedure
     .input(z.object({ id: z.string(), operationIds: z.array(z.string()).max(30) }))
     .mutation(({ ctx, input }) => applyPlan(ctx.sessionUser.id, input.id, input.operationIds)),

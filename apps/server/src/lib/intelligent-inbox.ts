@@ -146,12 +146,17 @@ export async function inboxInsights(sql: Sql, userId: string): Promise<MailInsig
     FROM mail_store.thread t JOIN mail_store.message m ON m.account=t.account AND m.message_id=t.latest_id
     JOIN mail0_connection c ON lower(c.email)=m.account AND c.user_id=${userId}
     LEFT JOIN mail_store.ai_message a ON a.account=m.account AND a.message_id=m.message_id
-    WHERE t.in_inbox AND coalesce((
-      SELECT o.action NOT IN ('archive','trash','spam') OR o.last_error IS NOT NULL
-      FROM mail_store.outbox o WHERE o.account=m.account AND o.message_id=m.message_id
-        AND o.completed_at IS NULL AND o.action IN ('archive','trash','spam','inbox')
-      ORDER BY o.id DESC LIMIT 1
-    ),true)
+    WHERE t.in_inbox AND EXISTS (
+      SELECT 1 FROM mail_store.message visible
+      WHERE visible.account=t.account AND visible.thread_id=t.thread_id AND visible.in_inbox
+        AND coalesce((
+          SELECT o.action NOT IN ('archive','trash','spam')
+          FROM mail_store.outbox o
+          WHERE o.account=visible.account AND o.message_id=visible.message_id
+            AND o.completed_at IS NULL AND o.action IN ('archive','trash','spam','inbox')
+          ORDER BY o.id DESC LIMIT 1
+        ),true)
+    )
     ORDER BY coalesce(a.priority,50) DESC,m.received_at DESC LIMIT 120`;
   return rows.map(insight);
 }
@@ -186,6 +191,76 @@ export async function searchInsights(
     ORDER BY m.received_at DESC LIMIT ${limit}`;
   return rows.map(insight);
 }
+export type MoveActivity = {
+  account: string;
+  threadId: string;
+  subject: string;
+  action: 'archive' | 'trash';
+  status: 'pending' | 'failed' | 'completed';
+  queued: number;
+  completed: number;
+  failed: number;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export async function listMoveActivity(sql: Sql, userId: string): Promise<MoveActivity[]> {
+  return sql<MoveActivity[]>`
+    WITH latest AS (
+      SELECT DISTINCT ON (o.account,o.message_id)
+        o.account,o.message_id,o.action,o.created_at,o.completed_at,o.last_error, b.last_error AS sync_error,
+        coalesce(e.detail->>'threadId',m.thread_id) AS thread_id,
+        coalesce(nullif(e.detail->>'subject',''),m.metadata->>'subject','Message') AS subject
+      FROM mail_store.outbox o
+      JOIN mail0_connection c ON lower(c.email)=o.account AND c.user_id=${userId}
+      LEFT JOIN mail_store.ai_event e ON e.id=o.event_id AND e.user_id=${userId}
+      LEFT JOIN mail_store.mailbox b ON b.account=o.account
+      LEFT JOIN mail_store.message m ON m.account=o.account AND m.message_id=o.message_id
+      WHERE o.action IN ('archive','trash','spam','inbox')
+        AND (o.completed_at IS NULL OR o.completed_at > now()-interval '1 day')
+      ORDER BY o.account,o.message_id,o.id DESC
+    )
+    SELECT account,thread_id AS "threadId",max(subject) AS subject,action,
+      CASE WHEN bool_or(completed_at IS NULL AND (last_error IS NOT NULL OR sync_error IS NOT NULL)) THEN 'failed'
+           WHEN bool_or(completed_at IS NULL) THEN 'pending' ELSE 'completed' END AS status,
+      count(*) FILTER (WHERE completed_at IS NULL AND last_error IS NULL)::int AS queued,
+      count(*) FILTER (WHERE completed_at IS NOT NULL)::int AS completed,
+      count(*) FILTER (WHERE completed_at IS NULL AND last_error IS NOT NULL)::int AS failed,
+      CASE WHEN bool_or(completed_at IS NULL AND last_error IS NOT NULL)
+        THEN 'The mail provider could not complete this action. Retrying.'
+        WHEN bool_or(completed_at IS NULL AND sync_error IS NOT NULL)
+        THEN 'Mailbox sync is unavailable. Retrying.'
+        ELSE NULL END AS "lastError",
+      max(coalesce(completed_at,created_at))::text AS "updatedAt"
+    FROM latest WHERE thread_id IS NOT NULL AND action IN ('archive','trash')
+    GROUP BY account,thread_id,action
+    HAVING bool_or(completed_at IS NULL) OR max(completed_at)>now()-interval '2 minutes'
+    ORDER BY max(coalesce(completed_at,created_at)) DESC LIMIT 200`;
+}
+
+export async function retryMove(sql: Sql, userId: string, account: string, threadId: string) {
+  const rows = await sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (o.account,o.message_id) o.id,o.account,o.message_id,o.action,
+        o.completed_at,o.last_error,coalesce(e.detail->>'threadId',m.thread_id) AS thread_id
+      FROM mail_store.outbox o
+      JOIN mail0_connection c ON lower(c.email)=o.account AND c.user_id=${userId}
+      LEFT JOIN mail_store.ai_event e ON e.id=o.event_id AND e.user_id=${userId}
+      LEFT JOIN mail_store.message m ON m.account=o.account AND m.message_id=o.message_id
+      WHERE o.account=${account} AND o.action IN ('archive','trash','spam','inbox')
+      ORDER BY o.account,o.message_id,o.id DESC
+    ), retried AS (
+      UPDATE mail_store.outbox o SET last_error=NULL,next_attempt_at=now()
+      FROM latest l WHERE o.id=l.id AND l.thread_id=${threadId} AND l.action IN ('archive','trash')
+        AND l.completed_at IS NULL AND l.last_error IS NOT NULL RETURNING o.event_id
+    ), events AS (
+      UPDATE mail_store.ai_event e SET status='queued',updated_at=now()
+      WHERE e.user_id=${userId} AND e.id IN (SELECT event_id FROM retried) RETURNING e.id
+    )
+    SELECT count(*)::int AS count FROM retried`;
+  return { retried: Number(rows[0]?.count ?? 0) };
+}
+
 export async function listRules(sql: Sql, userId: string): Promise<Rule[]> {
   return sql<
     Rule[]
@@ -252,7 +327,7 @@ export async function performAction(
   };
   const [event] =
     await sql`INSERT INTO mail_store.ai_event (user_id,account,message_id,kind,status,summary,detail)
-    VALUES (${userId},${input.account},${input.messageId},${input.action},${['dismiss', 'expense'].includes(input.action) ? 'completed' : 'queued'},${input.action + ' · ' + (row.metadata.subject || 'Message')},${JSON.stringify({ business: input.business ?? 'unknown' })}::jsonb) RETURNING id::text`;
+    VALUES (${userId},${input.account},${input.messageId},${input.action},${['dismiss', 'expense'].includes(input.action) ? 'completed' : 'queued'},${input.action + ' · ' + (row.metadata.subject || 'Message')},${JSON.stringify({ business: input.business ?? 'unknown', threadId: row.thread_id, subject: row.metadata.subject ?? '' })}::jsonb) RETURNING id::text`;
   if (input.action === 'dismiss') {
     await sql`UPDATE mail_store.ai_message SET dismissed=true WHERE account=${input.account} AND message_id=${input.messageId}`;
   } else if (input.action === 'expense') {
@@ -322,13 +397,21 @@ function explicitAgeCutoff(text: string, now: number) {
 }
 
 type PlanFollowUp = { planId: string; question: number };
+type PlanContext = { account: string; messageId: string };
 
 async function generatePlan(
   userId: string,
   text: string,
   signal: AbortSignal,
   followUp?: PlanFollowUp,
+  selected?: PlanContext,
 ) {
+  const selectedRow = selected
+    ? await withIntelligenceDb((sql) =>
+        requireMessage(sql, userId, selected.account.toLowerCase(), selected.messageId),
+      )
+    : null;
+  const selectedMessage = selectedRow ? insight(selectedRow) : null;
   const now = Date.now();
   const cutoff = explicitAgeCutoff(text, now);
   const previous = followUp
@@ -399,6 +482,10 @@ async function generatePlan(
     system: planningSystem,
     prompt: JSON.stringify({
       ownerRequest: text,
+      selectedMessage: selectedMessage && {
+        ...selectedMessage,
+        body: String(selectedRow?.body ?? '').slice(0, 14000),
+      },
       previous,
       currentDate: new Date().toISOString(),
       messages: cutoff === undefined ? context.messages : [],
@@ -438,8 +525,16 @@ async function generatePlan(
       'Some proposed messages could not be verified. Refine that part of the request.',
     );
   object.operations = validOperations.map((op) => ({ ...op, id: crypto.randomUUID() }));
-  const response = { ...object, results, appliedOperationIds: [] as string[] };
-  const id = crypto.randomUUID();
+  const retainedResults = selectedMessage
+    ? [
+        selectedMessage,
+        ...results.filter(
+          (m) => m.account !== selectedMessage.account || m.messageId !== selectedMessage.messageId,
+        ),
+      ]
+    : results;
+  const response = { ...object, results: retainedResults, appliedOperationIds: [] as string[] };
+  const id: string = crypto.randomUUID();
   signal.throwIfAborted();
   await withIntelligenceDb(async (sql) => {
     await sql`INSERT INTO mail_store.ai_plan (id,user_id,text,response) VALUES (${id},${userId},${text},${JSON.stringify(response as any)}::jsonb)`;
@@ -465,7 +560,7 @@ async function makeBulkArchivePlan(userId: string, text: string, cutoff: number)
       answer: count
         ? `Queue archive for ${count} inbox messages received before ${before.slice(0, 10)} UTC. Already queued moves are excluded. Provider delivery continues in Activity.`
         : 'There are no matching inbox messages without a move already queued.',
-      questions: [],
+      questions: [] as string[],
       operations: rows.map(({ account, message_ids }) => ({
         id: crypto.randomUUID(),
         kind: 'action' as const,
@@ -473,11 +568,11 @@ async function makeBulkArchivePlan(userId: string, text: string, cutoff: number)
         title: `Archive ${message_ids.length} messages in ${account}`,
         account,
         messageIds: message_ids,
-      })),
+      })) as z.infer<typeof operationSchema>[],
       results: [] as MailInsight[],
       appliedOperationIds: [] as string[],
     };
-    const id = crypto.randomUUID();
+    const id: string = crypto.randomUUID();
     const saved = { ...response, bulkArchiveBefore: before };
     await sql`INSERT INTO mail_store.ai_plan (id,user_id,text,response)
       VALUES (${id},${userId},${text},${JSON.stringify(saved)}::jsonb)`;
@@ -499,7 +594,8 @@ async function queueBulkArchive(
     WITH queued AS (
       INSERT INTO mail_store.ai_event (user_id,account,message_id,kind,status,summary,detail)
       SELECT ${userId},m.account,m.message_id,'archive','queued',
-        'archive · ' || coalesce(nullif(m.metadata->>'subject',''),'Message'), '{}'::jsonb
+        'archive · ' || coalesce(nullif(m.metadata->>'subject',''),'Message'),
+        jsonb_build_object('threadId',m.thread_id,'subject',coalesce(m.metadata->>'subject',''))
       FROM mail_store.message m
       WHERE m.account=${account} AND m.message_id=ANY(${messageIds}::text[])
         AND m.in_inbox AND NOT m.draft AND m.received_at < ${before}::timestamptz
@@ -593,10 +689,16 @@ export async function applyPlan(userId: string, id: string, operationIds: string
   );
 }
 
-export async function makePlan(userId: string, text: string, followUp?: PlanFollowUp) {
+export async function makePlan(
+  userId: string,
+  text: string,
+  followUp?: PlanFollowUp,
+  selected?: PlanContext,
+) {
   const cutoff = explicitAgeCutoff(text, Date.now());
   if (
     !followUp &&
+    !selected &&
     cutoff !== undefined &&
     /^(?:archive|arvhive) all (?:the )?(?:(?:inbox )?(?:mail|emails?|messages?|stuff) )?(?:older than \d+ weeks?|more than \d+ weeks? old)[.!]?$/i.test(
       text,
@@ -605,7 +707,7 @@ export async function makePlan(userId: string, text: string, followUp?: PlanFoll
     return makeBulkArchivePlan(userId, text, cutoff);
   const signal = AbortSignal.timeout(50_000);
   try {
-    return await generatePlan(userId, text, signal, followUp);
+    return await generatePlan(userId, text, signal, followUp, selected);
   } catch (cause) {
     if (signal.aborted)
       throw new TRPCError({

@@ -126,6 +126,7 @@ export function useOptimisticActions() {
     const bulkActionMessage = itemCount > 1 ? `${toastMessage} (${itemCount} items)` : toastMessage;
 
     let started = false;
+    let moveToast: string | number | undefined;
     async function doAction() {
       if (started || !optimisticActionsManager.pendingActions.has(pendingActionId)) return;
       started = true;
@@ -161,6 +162,12 @@ export function useOptimisticActions() {
             queryClient.invalidateQueries({ queryKey: trpc.intelligentInbox.pathKey() }),
           ]);
         }
+        if (type === ActionType.MOVE) {
+          toast.success('Move queued. Track delivery in Inbox or Activity.', {
+            id: moveToast,
+            duration: 5000,
+          });
+        }
         const settled = optimisticActionsManager.settleAction(pendingActionId);
         removeOptimisticAction(optimisticId);
         if (settled?.typeDrained) {
@@ -172,11 +179,17 @@ export function useOptimisticActions() {
         console.error('Action failed:', error);
         removeOptimisticAction(optimisticId);
         optimisticActionsManager.settleAction(pendingActionId);
-        toast.error('Action failed');
+        toast.error('Could not queue the action. Please try again.', {
+          id: moveToast,
+          duration: Infinity,
+        });
       }
     }
 
-    if (toastMessage.trim().length) {
+    if (type === ActionType.MOVE) {
+      moveToast = toast.loading('Queuing move…');
+      void doAction();
+    } else if (toastMessage.trim().length) {
       toast(bulkActionMessage, {
         onAutoClose: () => {
           doAction();
