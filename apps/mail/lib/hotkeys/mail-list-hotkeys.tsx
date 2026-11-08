@@ -138,13 +138,14 @@ export function MailListHotkeys() {
     optimisticMoveThreadsTo(idsToArchive, folder, 'archive');
   }, [mail.bulkSelected, folder, optimisticMoveThreadsTo, shouldUseHover]);
 
+  const connectionId = connection?.id;
   const moveToBin = useCallback(() => {
-    if (!connection?.id || folder === 'bin' || pathname.startsWith('/mail/unified')) return;
+    if (!connectionId || folder === 'bin' || pathname.startsWith('/mail/unified')) return;
     const ids =
       shouldUseHover && hoveredEmailId.current ? [hoveredEmailId.current] : mail.bulkSelected;
-    optimisticMoveThreadsTo(ids, folder, 'bin', connection.id);
+    optimisticMoveThreadsTo(ids, folder, 'bin', connectionId);
   }, [
-    connection?.id,
+    connectionId,
     folder,
     pathname,
     shouldUseHover,

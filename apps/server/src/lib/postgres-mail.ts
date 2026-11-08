@@ -30,6 +30,8 @@ const escapeText = (body: string) =>
   body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
 function renderBody(body: string) {
+  // Exclude control characters from indexed mail links.
+  // oxlint-disable-next-line eslint/no-control-regex
   const links = /\b(?:https?:\/\/|mailto:)[^\s<>"'\x00-\x1f]+/gi;
   let html = '';
   let cursor = 0;

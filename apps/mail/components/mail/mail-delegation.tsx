@@ -306,17 +306,17 @@ function DelegationDetail({ taskId }: { taskId: string }) {
       onError: (error) => toast.error(error.message),
     }),
   );
-  const [reply, setReply] = useState('');
-  const replyKey = useRef(crypto.randomUUID());
-  useEffect(() => {
-    setReply('');
-    replyKey.current = crypto.randomUUID();
-  }, [question?.sequence]);
+  const [draft, setDraft] = useState<{
+    sequence: Event['sequence'];
+    text: string;
+    requestKey: string;
+  } | null>(null);
+  const currentDraft = draft?.sequence === question?.sequence ? draft : null;
+  const reply = currentDraft?.text ?? '';
   const mutation = useMutation(
     trpc.mailDelegation.reply.mutationOptions({
-      onSuccess: async () => {
-        setReply('');
-        replyKey.current = crypto.randomUUID();
+      onSuccess: async (_result, submitted) => {
+        setDraft((previous) => (previous?.requestKey === submitted.requestKey ? null : previous));
         await cache.invalidateQueries({ queryKey: trpc.mailDelegation.pathKey() });
       },
       onError: (error) => toast.error(error.message),
@@ -415,12 +415,12 @@ function DelegationDetail({ taskId }: { taskId: string }) {
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              if (reply.trim())
+              if (currentDraft && reply.trim())
                 mutation.mutate({
                   taskId,
                   questionId: String(question.payload.questionId),
                   text: reply.trim(),
-                  requestKey: replyKey.current,
+                  requestKey: currentDraft.requestKey,
                 });
             }}
           >
@@ -435,8 +435,11 @@ function DelegationDetail({ taskId }: { taskId: string }) {
               value={reply}
               disabled={mutation.isPending}
               onChange={(event) => {
-                setReply(event.target.value);
-                replyKey.current = crypto.randomUUID();
+                setDraft({
+                  sequence: question.sequence,
+                  text: event.target.value,
+                  requestKey: crypto.randomUUID(),
+                });
               }}
               className="border-border bg-background focus-visible:ring-ring w-full rounded-lg border p-3 text-sm focus-visible:outline-none focus-visible:ring-2"
             />
@@ -468,12 +471,17 @@ function DelegationEventView({ event }: { event: Event }) {
     'task.result': 'Reported result',
     'task.accepted': 'Accepted by you',
   };
-  const evidence = Array.isArray(payload.evidence)
-    ? payload.evidence.filter(
-        (item): item is Record<string, unknown> =>
-          !!item && typeof item === 'object' && !Array.isArray(item),
-      )
-    : [];
+  const evidence = new Map<string, { reference: string; description: string }>();
+  if (Array.isArray(payload.evidence)) {
+    for (const item of payload.evidence) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const reference = typeof item.reference === 'string' ? item.reference : '';
+      const description = typeof item.description === 'string' ? item.description : '';
+      if (reference || description) {
+        evidence.set(JSON.stringify([reference, description]), { reference, description });
+      }
+    }
+  }
   return (
     <div>
       <p className="text-xs font-medium">
@@ -485,24 +493,24 @@ function DelegationEventView({ event }: { event: Event }) {
       {typeof text === 'string' && (
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{text}</p>
       )}
-      {evidence.length > 0 && (
+      {evidence.size > 0 && (
         <ul className="mt-2 space-y-2 text-sm">
-          {evidence.map((item, index) => (
-            <li key={index}>
-              {typeof item.reference === 'string' && /^https?:\/\//i.test(item.reference) ? (
+          {[...evidence].map(([key, item]) => (
+            <li key={key}>
+              {/^https?:\/\//i.test(item.reference) ? (
                 <a
                   href={item.reference}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 underline underline-offset-4"
                 >
-                  {typeof item.description === 'string' ? item.description : item.reference}
+                  {item.description || item.reference}
                   <ExternalLink className="size-3" />
                 </a>
               ) : (
                 <span>
                   {[item.description, item.reference]
-                    .filter((value) => typeof value === 'string')
+                    .filter(Boolean)
                     .join(' · ')}
                 </span>
               )}
