@@ -126,7 +126,7 @@ export function IntelligentInbox({
         setProposal(result);
         setChosen(new Set(result.operations.map((operation) => operation.id)));
       },
-      onError: (error) => toast.error(error.message),
+      onError: () => {}, // The form keeps the instruction and shows a retryable error below.
     }),
   );
   const apply = useMutation(
@@ -369,6 +369,7 @@ export function IntelligentInbox({
               disabled={plan.isPending || apply.isPending}
               onChange={(event) => {
                 setInstruction(event.target.value);
+                if (plan.isError) plan.reset();
                 if (proposal) setProposal(null);
               }}
               rows={instruction.includes('\n') ? 3 : 1}
@@ -425,13 +426,16 @@ export function IntelligentInbox({
           </form>
           {plan.isError && (
             <p role="alert" className="text-destructive my-3 text-sm">
-              {plan.error.message}
+              {/unexpected end of json|failed to fetch|network|load failed/i.test(plan.error.message)
+                ? 'Couldn’t reach Zero. Your text is still here; try Send again.'
+                : plan.error.message}
             </p>
           )}
           {(delegationDraft ||
             activeTaskId ||
             ((view === 'inbox' || view === 'activity') &&
-              ((view === 'activity' && visibleTasks.length > 0) || delegations.isError))) && (
+              ((view === 'activity' && visibleTasks.length > 0) ||
+                (delegations.isError && !delegations.data)))) && (
             <DelegationWorkspace
               draft={delegationDraft}
               clearDraft={() => setDelegationDraft(null)}
@@ -605,7 +609,7 @@ export function IntelligentInbox({
                   </Button>
                 </div>
               )}
-              {openTasks.length > 0 && (
+              {openTasks.length > 0 && !activeTaskId && !delegationDraft && (
                 <section aria-label="Delegated work in progress" className="mb-6 space-y-2">
                   {openTasks.map((task) => (
                     <button

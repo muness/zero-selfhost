@@ -1,6 +1,6 @@
 import { addOptimisticActionAtom, removeOptimisticActionAtom } from '@/store/optimistic-updates';
 import { optimisticActionsManager, type PendingAction } from '@/lib/optimistic-actions-manager';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
@@ -10,6 +10,8 @@ import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
 import { useCallback } from 'react';
+import type { inferRouterOutputs } from '@trpc/server';
+import type { AppRouter } from '@zero/server/trpc';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
@@ -83,6 +85,7 @@ export function useOptimisticActions() {
     execute,
     undo,
     toastMessage,
+    connectionId,
   }: {
     type: keyof typeof ActionType;
     threadIds: string[];
@@ -91,6 +94,7 @@ export function useOptimisticActions() {
     execute: () => Promise<void>;
     undo: () => void;
     toastMessage: string;
+    connectionId?: string;
     folders?: string[];
   }) {
     const pendingActionId = generatePendingActionId();
@@ -132,6 +136,61 @@ export function useOptimisticActions() {
       started = true;
       try {
         await execute();
+        if (
+          type === ActionType.MOVE &&
+          'destination' in params &&
+          (params.destination === 'archive' || params.destination === 'bin')
+        ) {
+          // An overview request started before the move can finish after it was
+          // queued. Cancel it and remove the affected rows before dropping the
+          // optimistic state, so stale cached data cannot resurrect them.
+          const overviewKey = trpc.intelligentInbox.overview.queryKey();
+          const listKey = trpc.mail.listThreads.infiniteQueryKey();
+          const unifiedKey = trpc.mail.listUnifiedInbox.infiniteQueryKey();
+          const inboxLists = {
+            queryKey: listKey,
+            predicate: (query: { queryKey: readonly unknown[] }) => {
+              const options = query.queryKey[1] as { input?: { folder?: string } } | undefined;
+              return !options?.input?.folder || options.input.folder === 'inbox';
+            },
+          };
+          await Promise.all([
+            queryClient.cancelQueries({ queryKey: overviewKey }),
+            queryClient.cancelQueries(inboxLists),
+            queryClient.cancelQueries({ queryKey: unifiedKey }),
+          ]);
+          queryClient.setQueryData<inferRouterOutputs<AppRouter>['intelligentInbox']['overview']>(
+            overviewKey,
+            (current) => {
+              if (!current) return current;
+              const keep = (item: (typeof current.attention)[number]) =>
+                !threadIds.includes(item.threadId) ||
+                (connectionId !== undefined && item.connectionId !== connectionId);
+              return {
+                ...current,
+                attention: current.attention.filter(keep),
+                noise: current.noise.filter(keep),
+              };
+            },
+          );
+          type ThreadPage = inferRouterOutputs<AppRouter>['mail']['listThreads'];
+          const withoutMoved = (current: InfiniteData<ThreadPage> | undefined) =>
+            current && {
+              ...current,
+              pages: current.pages.map((page) => ({
+                ...page,
+                threads: page.threads.filter(
+                  (item) =>
+                    !threadIds.includes(item.id) ||
+                    (connectionId !== undefined &&
+                      'connectionId' in item &&
+                      item.connectionId !== connectionId),
+                ),
+              })),
+            };
+          queryClient.setQueriesData<InfiniteData<ThreadPage>>(inboxLists, withoutMoved);
+          queryClient.setQueriesData<InfiniteData<ThreadPage>>({ queryKey: unifiedKey }, withoutMoved);
+        }
         const typeActions = optimisticActionsManager.pendingActionsByType.get(type);
         console.log('here', {
           pendingActionsByTypeRef: optimisticActionsManager.pendingActionsByType.get(type)?.size,
@@ -169,6 +228,8 @@ export function useOptimisticActions() {
           });
         }
         const settled = optimisticActionsManager.settleAction(pendingActionId);
+        if (type === ActionType.MOVE)
+          threadIds.forEach((id) => setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` }));
         removeOptimisticAction(optimisticId);
         if (settled?.typeDrained) {
           await refreshData(
@@ -177,6 +238,8 @@ export function useOptimisticActions() {
         }
       } catch (error) {
         console.error('Action failed:', error);
+        if (type === ActionType.MOVE)
+          threadIds.forEach((id) => setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` }));
         removeOptimisticAction(optimisticId);
         optimisticActionsManager.settleAction(pendingActionId);
         toast.error('Could not queue the action. Please try again.', {
@@ -351,10 +414,6 @@ export function useOptimisticActions() {
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
         }
-
-        threadIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
@@ -363,6 +422,7 @@ export function useOptimisticActions() {
         });
       },
       toastMessage: successMessage,
+      connectionId,
       folders: [currentFolder, destination],
     });
   }
@@ -398,9 +458,6 @@ export function useOptimisticActions() {
           setMail({ ...mail, bulkSelected: [] });
         }
 
-        threadIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);

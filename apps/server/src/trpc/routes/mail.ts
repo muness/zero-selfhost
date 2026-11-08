@@ -132,7 +132,16 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { folder, maxResults, cursor, q, labelIds } = input;
       const { activeConnection } = ctx;
-      if (env.POSTGRES_MAIL_STORE === 'true' && folder === FOLDERS.INBOX && !q && !labelIds.length)
+      // The default Inbox category injects this legacy provider search even
+      // when the user has not searched. Keep ordinary inbox reads in the local
+      // store, where pending moves are visible immediately.
+      const defaultInboxSearch = 'NOT is:draft (is:inbox OR (is:sent AND to:me))';
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        folder === FOLDERS.INBOX &&
+        (!q || q === defaultInboxSearch) &&
+        !labelIds.length
+      )
         return withServerTiming(ctx.c, 'inbox_postgres', () =>
           postgresInbox(
             ctx.sessionUser.id,
