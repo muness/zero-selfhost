@@ -30,6 +30,11 @@ export default function MailSourcePage() {
   useEffect(() => {
     if (/^#body-part-\d+$/.test(hash)) document.getElementById(hash.slice(1))?.scrollIntoView();
   }, [hash, source.data]);
+  const parts = source.data?.parts.map((text, index) => ({
+    anchor: `body-part-${index}`,
+    number: index + 1,
+    text,
+  }));
   return (
     <main className="h-screen overflow-auto p-4 sm:p-8">
       <Link to="/mail/unified" className="text-sm underline">
@@ -48,14 +53,14 @@ export default function MailSourcePage() {
           {source.error.message}
         </p>
       ) : (
-        source.data?.parts.map((part, index) => (
+        parts?.map((part) => (
           <section
-            key={`body-part-${index}`}
-            id={`body-part-${index}`}
+            key={part.anchor}
+            id={part.anchor}
             className="mt-6 scroll-mt-4"
           >
-            <h2 className="text-muted-foreground mb-2 text-xs">Source part {index + 1}</h2>
-            <pre className="whitespace-pre-wrap break-words font-sans text-sm">{part}</pre>
+            <h2 className="text-muted-foreground mb-2 text-xs">Source part {part.number}</h2>
+            <pre className="whitespace-pre-wrap break-words font-sans text-sm">{part.text}</pre>
           </section>
         ))
       )}
