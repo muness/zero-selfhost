@@ -31,6 +31,7 @@ export function DelegationWorkspace({
   setActiveTaskId,
   tasks,
   unavailable,
+  sectionId = 'mail-delegation',
 }: {
   draft: DelegationDraft | null;
   clearDraft: () => void;
@@ -38,10 +39,11 @@ export function DelegationWorkspace({
   setActiveTaskId: (id: string | null) => void;
   tasks: Task[];
   unavailable: boolean;
+  sectionId?: string;
 }) {
   return (
     <section
-      id="mail-delegation"
+      id={sectionId}
       aria-label="Delegated work"
       className="border-border mb-6 scroll-mt-4 border-b pb-5"
     >
@@ -125,9 +127,6 @@ function DelegationComposer({
   const cache = useQueryClient();
   const [instruction, setInstruction] = useState(draft.instruction);
   const [project, setProject] = useState('');
-  const [allowWrites, setAllowWrites] = useState(false);
-  const targets = useQuery(trpc.mailDelegation.projects.queryOptions());
-  const selectedProject = targets.data?.find((target) => target.id === project);
   const requestKey = useRef(crypto.randomUUID());
   const mutation = useMutation(
     trpc.mailDelegation.request.mutationOptions({
@@ -146,7 +145,6 @@ function DelegationComposer({
         if (instruction.trim())
           mutation.mutate({
             instruction: instruction.trim(),
-            allowProjectWrites: allowWrites && selectedProject?.allowWrites === true,
             projectHint: project.trim() || undefined,
             sources: draft.sources.map(({ account, messageId }) => ({ account, messageId })),
             requestKey: requestKey.current,
@@ -171,56 +169,18 @@ function DelegationComposer({
         className="border-border bg-background focus-visible:ring-ring w-full rounded-lg border p-3 text-sm focus-visible:outline-none focus-visible:ring-2"
       />
       <label className="text-muted-foreground block text-xs">
-        Repository
-        <select
+        Project or repository, if known
+        <input
           value={project}
-          disabled={mutation.isPending || targets.isLoading}
+          disabled={mutation.isPending}
           onChange={(event) => {
             setProject(event.target.value);
-            setAllowWrites(false);
             requestKey.current = crypto.randomUUID();
           }}
+          placeholder="Optional context for the agent"
           className="border-border bg-background text-foreground focus-visible:ring-ring mt-1 block w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-        >
-          <option value="">Identify the project during investigation</option>
-          {targets.data?.map((target) => (
-            <option key={target.id} value={target.id}>
-              {target.name}
-            </option>
-          ))}
-        </select>
+        />
       </label>
-      {targets.isError && (
-        <p role="status" className="text-muted-foreground text-xs">
-          Configured repositories could not be loaded.{' '}
-          <button type="button" className="underline" onClick={() => void targets.refetch()}>
-            Retry
-          </button>
-        </p>
-      )}
-      {selectedProject && (
-        <div className="space-y-2">
-          <p className="text-muted-foreground break-all text-xs">{selectedProject.repository}</p>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={allowWrites}
-              disabled={mutation.isPending || !selectedProject.allowWrites}
-              onChange={(event) => {
-                setAllowWrites(event.target.checked);
-                requestKey.current = crypto.randomUUID();
-              }}
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <span>Allow changes in this repository</span>
-          </label>
-          {!selectedProject.allowWrites && (
-            <p className="text-muted-foreground text-xs">
-              This repository is configured for read-only investigation.
-            </p>
-          )}
-        </div>
-      )}
       <details className="text-muted-foreground text-xs">
         <summary className="cursor-pointer">
           {draft.sources.length} selected {draft.sources.length === 1 ? 'message' : 'messages'} will
@@ -240,8 +200,8 @@ function DelegationComposer({
         </p>
       )}
       <p className="text-muted-foreground text-xs">
-        Your instruction defines the authorized work. Progress, questions, and reported results
-        return here.
+        Your instruction defines the work. Dot uses its connected Device for execution. Progress,
+        questions, and reported results return here.
       </p>
       <div className="flex gap-2">
         <Button
@@ -519,7 +479,6 @@ function DelegationEventView({ event }: { event: Event }) {
 
 function ScopeDescription({ scope }: { scope: string }) {
   let instruction = scope;
-  let projects: string[] = [];
   try {
     const parsed: unknown = JSON.parse(scope);
     if (
@@ -529,22 +488,9 @@ function ScopeDescription({ scope }: { scope: string }) {
       typeof parsed.instruction === 'string'
     ) {
       instruction = parsed.instruction;
-      if ('projectWrites' in parsed && Array.isArray(parsed.projectWrites))
-        projects = parsed.projectWrites.filter(
-          (value): value is string => typeof value === 'string',
-        );
     }
   } catch {
     /* Earlier tasks store the owner's instruction as plain text. */
   }
-  return (
-    <div className="mt-2 space-y-2">
-      <p className="whitespace-pre-wrap">{instruction}</p>
-      <p>
-        {projects.length
-          ? `Repository changes authorized for ${projects.join(', ')}`
-          : 'Read-only project investigation'}
-      </p>
-    </div>
-  );
+  return <p className="mt-2 whitespace-pre-wrap">{instruction}</p>;
 }

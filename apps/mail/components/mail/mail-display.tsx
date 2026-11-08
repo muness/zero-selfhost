@@ -1849,6 +1849,7 @@ const MailDisplay = ({
               <DialogDescription>This message will be attached as context.</DialogDescription>
             </DialogHeader>
             <DelegationWorkspace
+              sectionId={`message-delegation-${emailData.id}`}
               draft={delegationDraft}
               clearDraft={() => setDelegationDraft(null)}
               activeTaskId={delegationTaskId}
