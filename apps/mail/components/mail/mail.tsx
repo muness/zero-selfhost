@@ -34,49 +34,13 @@ import AIToggleButton from '../ai-toggle-button';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useTRPC } from '@/providers/query-provider';
+import { MailActionStatus } from './mail-action-status';
 
 import { cn } from '@/lib/utils';
 
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
-
-function InboxMoveStatus({ account }: { account?: string | null }) {
-  const trpc = useTRPC();
-  const cache = useQueryClient();
-  const moves = useQuery(
-    trpc.intelligentInbox.moveActivity.queryOptions(undefined, { refetchInterval: 5_000 }),
-  );
-  const retry = useMutation(
-    trpc.intelligentInbox.retryMove.mutationOptions({
-      onSuccess: () => void cache.invalidateQueries({ queryKey: trpc.intelligentInbox.moveActivity.queryKey() }),
-    }),
-  );
-  const items = (moves.data ?? [])
-    .filter((move) => move.account.toLowerCase() === account?.toLowerCase())
-    .sort((a, b) => Number(a.status === 'completed') - Number(b.status === 'completed'))
-    .slice(0, 3);
-  if (!items.length && !moves.isError) return null;
-  return (
-    <section aria-label="Recent mail actions" aria-live="polite" className="border-border space-y-1 border-b px-4 py-2 text-sm">
-      {moves.isError && <p>Couldn’t load action status. <button className="underline" onClick={() => void moves.refetch()}>Retry</button></p>}
-      {items.map((move) => (
-        <div key={`${move.account}:${move.threadId}:${move.action}`} className="flex items-center justify-between gap-2">
-          <span className="min-w-0 truncate">{move.subject || 'Message'}</span>
-          <span className={move.status === 'failed' ? 'text-destructive shrink-0' : 'text-muted-foreground shrink-0'}>
-            {move.status === 'pending' ? (move.action === 'archive' ? 'Archiving…' : 'Moving to Bin…') :
-              move.status === 'completed' ? (move.action === 'archive' ? 'Archived' : 'Moved to Bin') :
-                (move.lastError || 'Action failed.')}
-          </span>
-          {move.status === 'failed' && move.failed > 0 && <button className="shrink-0 underline" disabled={retry.isPending} onClick={() => retry.mutate({account: move.account, threadId: move.threadId})}>Retry</button>}
-        </div>
-      ))}
-      {retry.isError && <p className="text-destructive">Couldn’t retry the action. Please try again.</p>}
-    </section>
-  );
-}
 
 export function MailLayout() {
   const params = useParams<{ folder: string }>();
@@ -273,7 +237,7 @@ export function MailLayout() {
                 </div>
               </div>
 
-              {folder === 'inbox' && <InboxMoveStatus account={activeConnection?.email} />}
+              {folder === 'inbox' && <MailActionStatus account={activeConnection?.email} />}
               <div className="relative z-1 min-h-0 flex-1 overflow-hidden pt-0">
                 <MailList />
               </div>

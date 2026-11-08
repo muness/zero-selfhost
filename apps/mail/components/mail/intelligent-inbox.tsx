@@ -1,4 +1,5 @@
-import { DelegationWorkspace, delegationStatus, type DelegationDraft } from './mail-delegation';
+import { DelegationWorkspace, type DelegationDraft } from './mail-delegation';
+import { MailActionStatus } from './mail-action-status';
 import { Archive, ArrowUp, Check, ChevronDown, Loader2, Star, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -61,16 +62,6 @@ export function IntelligentInbox({
       { limit: 100 },
       { enabled: view === 'activity', refetchInterval: 30_000 },
     ),
-  );
-  const moves = useQuery(
-    trpc.intelligentInbox.moveActivity.queryOptions(undefined, { refetchInterval: 5_000 }),
-  );
-  const retryMove = useMutation(
-    trpc.intelligentInbox.retryMove.mutationOptions({
-      onSuccess: () =>
-        void cache.invalidateQueries({ queryKey: trpc.intelligentInbox.moveActivity.queryKey() }),
-      onError: (error) => toast.error(error.message, { duration: Infinity }),
-    }),
   );
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const pendingProposal = useQuery(
@@ -197,7 +188,7 @@ export function IntelligentInbox({
     }
     return { openTasks, closedTasks };
   }, [delegations.data]);
-  const visibleTasks = view === 'activity' ? closedTasks : openTasks;
+  const visibleTasks = view === 'activity' ? [...openTasks, ...closedTasks] : openTasks;
   const beginDelegation = (sources: Insight[]) => {
     if (!sources.length) {
       toast.info('Select a source message to delegate.');
@@ -208,14 +199,6 @@ export function IntelligentInbox({
       sources: sources.map(({ account, messageId, subject }) => ({ account, messageId, subject })),
       instruction,
     });
-    requestAnimationFrame(() =>
-      document
-        .getElementById('mail-delegation')
-        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
-    );
-  };
-  const showDelegation = (id: string) => {
-    setActiveTaskId(id);
     requestAnimationFrame(() =>
       document
         .getElementById('mail-delegation')
@@ -433,9 +416,8 @@ export function IntelligentInbox({
           )}
           {(delegationDraft ||
             activeTaskId ||
-            ((view === 'inbox' || view === 'activity') &&
-              ((view === 'activity' && visibleTasks.length > 0) ||
-                (delegations.isError && !delegations.data)))) && (
+            (view === 'activity' &&
+              (visibleTasks.length > 0 || (delegations.isError && !delegations.data)))) && (
             <DelegationWorkspace
               draft={delegationDraft}
               clearDraft={() => setDelegationDraft(null)}
@@ -609,92 +591,7 @@ export function IntelligentInbox({
                   </Button>
                 </div>
               )}
-              {openTasks.length > 0 && !activeTaskId && !delegationDraft && (
-                <section aria-label="Delegated work in progress" className="mb-6 space-y-2">
-                  {openTasks.map((task) => (
-                    <button
-                      key={task.id}
-                      type="button"
-                      className="border-border bg-muted/30 hover:bg-muted flex w-full flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left text-sm"
-                      onClick={() => showDelegation(task.id)}
-                    >
-                      <span className="min-w-0 flex-1 truncate font-medium">
-                        {task.instruction}
-                      </span>
-                      <span className="text-muted-foreground text-xs">
-                        {delegationStatus(task.status)} · View progress
-                      </span>
-                    </button>
-                  ))}
-                </section>
-              )}
-              {moves.isError && (
-                <p role="alert" className="text-destructive mb-4 text-sm">
-                  Action status is unavailable.{' '}
-                  <button className="underline" onClick={() => void moves.refetch()}>
-                    Retry
-                  </button>
-                </p>
-              )}
-              {!!moves.data?.length && (
-                <section
-                  aria-label="Recent mail actions"
-                  className="mb-6 space-y-2"
-                  aria-live="polite"
-                >
-                  {moves.data.map((move) => (
-                    <div
-                      key={JSON.stringify([move.account, move.threadId, move.action])}
-                      className="border-border bg-muted/30 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate font-medium">{move.subject || 'Message'}</p>
-                        <p className="text-muted-foreground text-xs">{move.account}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {move.status === 'pending' && (
-                          <span
-                            role="status"
-                            className="text-muted-foreground inline-flex items-center gap-1"
-                          >
-                            <Loader2 className="size-4 animate-spin" />
-                            {move.action === 'archive' ? 'Archiving…' : 'Moving to Bin…'}{' '}
-                            {move.completed > 0 && `(${move.completed} complete)`}
-                          </span>
-                        )}
-                        {move.status === 'completed' && (
-                          <span className="inline-flex items-center gap-1">
-                            <Check className="size-4" />
-                            {move.action === 'archive' ? 'Archived' : 'Moved to Bin'}
-                          </span>
-                        )}
-                        {move.status === 'failed' && (
-                          <>
-                            <span className="text-destructive">
-                              {move.lastError || 'Provider action failed.'}
-                            </span>
-                            {move.failed > 0 && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={retryMove.isPending}
-                                onClick={() =>
-                                  retryMove.mutate({
-                                    account: move.account,
-                                    threadId: move.threadId,
-                                  })
-                                }
-                              >
-                                Retry now
-                              </Button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </section>
-              )}
+              <MailActionStatus />
               {[{ title: 'Needs you', rows: items }].map(({ title, rows }) => (
                 <section key={title} className="mb-8">
                   <h2 className="mb-2 text-base font-semibold">{title}</h2>
