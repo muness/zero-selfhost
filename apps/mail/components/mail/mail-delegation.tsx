@@ -18,8 +18,8 @@ export const delegationStatus = (status: string) =>
     requested: 'Requested',
     running: 'Running',
     waiting: 'Needs your answer',
-    reported: 'Result reported · awaiting your acceptance',
-    accepted: 'Accepted by you',
+    reported: 'Result ready',
+    accepted: 'Accepted',
     failed: 'Failed',
     cancelled: 'Cancelled',
   })[status] ?? status.replaceAll('_', ' ');
@@ -309,30 +309,6 @@ function DelegationDetail({ taskId }: { taskId: string }) {
           Awaiting an agent claim. Delivery alone does not complete the work.
         </p>
       )}
-      <details className="text-muted-foreground text-xs">
-        <summary className="cursor-pointer">Instruction and source context</summary>
-        <ScopeDescription scope={current.authorizedScope} />
-        {current.projectHint && <p className="mt-2">Project · {current.projectHint}</p>}
-        <ul className="mt-2 space-y-1">
-          {current.sources.map((source) => (
-            <li key={JSON.stringify([source.account, source.messageId])}>
-              {source.subject} · {source.account}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-2">Context revision {current.contextRevision}</p>
-      </details>
-      {eventsQuery.hasNextPage && (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={eventsQuery.isFetchingNextPage}
-          onClick={() => void eventsQuery.fetchNextPage()}
-        >
-          <ChevronDown className="mr-1 size-3" />
-          Load earlier updates
-        </Button>
-      )}
       {eventsQuery.isError && (
         <p role="alert" className="text-sm">
           Could not load updates.{' '}
@@ -341,18 +317,21 @@ function DelegationDetail({ taskId }: { taskId: string }) {
           </button>
         </p>
       )}
-      <ol className="divide-border divide-y">
-        {events.map((event) => (
-          <li key={event.sequence} className="py-3">
-            <DelegationEventView event={event} />
-          </li>
-        ))}
-      </ol>
+      {result && (
+        <section aria-label="Agent result" className="border-border bg-muted/20 rounded-lg border p-4">
+          <h3 className="mb-2 text-sm font-semibold">Agent’s result</h3>
+          <DelegationEventView event={result} resultOnly />
+        </section>
+      )}
+      {!result && current.status === 'running' && (
+        <p className="text-muted-foreground text-sm">
+          {typeof events.findLast((event) => event.kind === 'task.progress')?.payload.summary === 'string'
+            ? String(events.findLast((event) => event.kind === 'task.progress')?.payload.summary)
+            : 'The agent is working on this.'}
+        </p>
+      )}
       {current.status === 'reported' && result && (
         <div className="space-y-2">
-          <p className="text-muted-foreground text-sm">
-            Accept this reported result when you are satisfied with the outcome and its evidence.
-          </p>
           <Button
             size="sm"
             disabled={accept.isPending}
@@ -365,8 +344,9 @@ function DelegationDetail({ taskId }: { taskId: string }) {
               })
             }
           >
-            {accept.isPending ? 'Recording acceptance…' : 'Accept result'}
+            {accept.isPending ? 'Recording…' : 'Accept result'}
           </Button>
+          <p className="text-muted-foreground text-xs">Accepting records your approval; it doesn’t ask the agent to continue.</p>
         </div>
       )}
       {current.status === 'waiting' &&
@@ -410,11 +390,36 @@ function DelegationDetail({ taskId }: { taskId: string }) {
             </Button>
           </form>
         )}
+      <details className="border-border border-t pt-3 text-sm">
+        <summary className="text-muted-foreground cursor-pointer">Source and instructions</summary>
+        <ScopeDescription scope={current.authorizedScope} />
+        {current.projectHint && <p className="mt-2">Project · {current.projectHint}</p>}
+        <ul className="mt-2 space-y-1">
+          {current.sources.map((source) => (
+            <li key={JSON.stringify([source.account, source.messageId])}>
+              {source.subject} · {source.account}
+            </li>
+          ))}
+        </ul>
+      </details>
+      <details className="border-border border-t pt-3 text-sm">
+        <summary className="text-muted-foreground cursor-pointer">Work log</summary>
+        <ol className="divide-border mt-2 divide-y">
+          {events.filter((event) => event.sequence !== result?.sequence).slice().reverse().map((event) => (
+            <li key={event.sequence} className="py-3"><DelegationEventView event={event} /></li>
+          ))}
+        </ol>
+        {eventsQuery.hasNextPage && (
+          <Button variant="ghost" size="sm" disabled={eventsQuery.isFetchingNextPage} onClick={() => void eventsQuery.fetchNextPage()}>
+            <ChevronDown className="mr-1 size-3" />Load earlier updates
+          </Button>
+        )}
+      </details>
     </div>
   );
 }
 
-function DelegationEventView({ event }: { event: Event }) {
+function DelegationEventView({ event, resultOnly = false }: { event: Event; resultOnly?: boolean }) {
   const payload = event.payload;
   const text = [payload.question, payload.summary, payload.text, payload.message].find(
     (value) => typeof value === 'string',
@@ -436,29 +441,29 @@ function DelegationEventView({ event }: { event: Event }) {
     : [];
   return (
     <div>
-      <p className="text-xs font-medium">
+      {!resultOnly && <p className="text-xs font-medium">
         {label[event.kind] ?? event.kind.replaceAll('.', ' ')}{' '}
         <span className="text-muted-foreground ml-2 font-normal">
           {new Date(event.createdAt).toLocaleString()}
         </span>
-      </p>
+      </p>}
       {typeof text === 'string' && (
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{text}</p>
       )}
       {evidence.length > 0 && (
-        <ul className="mt-2 space-y-2 text-sm">
+        <details className="mt-3 text-sm"><summary className="text-muted-foreground cursor-pointer">Evidence ({evidence.length})</summary><ul className="mt-2 space-y-3">
           {evidence.map((item, index) => (
             <li key={index}>
               {typeof item.reference === 'string' && /^https?:\/\//i.test(item.reference) ? (
-                <a
+                <div><p className="whitespace-pre-wrap">{typeof item.description === 'string' ? item.description : 'Source'}</p><a
                   href={item.reference}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 underline underline-offset-4"
                 >
-                  {typeof item.description === 'string' ? item.description : item.reference}
+                  Open source
                   <ExternalLink className="size-3" />
-                </a>
+                </a></div>
               ) : (
                 <span>
                   {[item.description, item.reference]
@@ -468,10 +473,7 @@ function DelegationEventView({ event }: { event: Event }) {
               )}
             </li>
           ))}
-        </ul>
-      )}
-      {event.kind === 'task.result' && (
-        <p className="text-muted-foreground mt-2 text-xs">Evidence supplied by the agent</p>
+        </ul></details>
       )}
     </div>
   );
