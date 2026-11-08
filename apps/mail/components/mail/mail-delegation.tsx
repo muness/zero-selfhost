@@ -278,6 +278,7 @@ function DelegationDetail({ taskId }: { taskId: string }) {
         setReply('');
         replyKey.current = crypto.randomUUID();
         await cache.invalidateQueries({ queryKey: trpc.mailDelegation.pathKey() });
+        toast.success('Sent to Dot. Waiting for the agent to pick it up.');
       },
       onError: (error) => toast.error(error.message),
     }),
@@ -330,10 +331,40 @@ function DelegationDetail({ taskId }: { taskId: string }) {
             : 'The agent is working on this.'}
         </p>
       )}
+      {(['reported', 'accepted', 'failed'] as string[]).includes(current.status) && (
+        <form
+          className="border-border space-y-2 border-t pt-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (reply.trim()) mutation.mutate({
+              taskId,
+              questionId: `__followup__:${current.contextRevision}`,
+              text: reply.trim(),
+              requestKey: replyKey.current,
+            });
+          }}
+        >
+          <label htmlFor="delegation-follow-up" className="block text-sm font-medium">Tell Dot what to do next</label>
+          <textarea
+            id="delegation-follow-up"
+            rows={3}
+            value={reply}
+            disabled={mutation.isPending}
+            placeholder="Ask a question or give a follow-up instruction…"
+            onChange={(event) => { setReply(event.target.value); replyKey.current = crypto.randomUUID(); }}
+            className="border-border bg-background focus-visible:ring-ring w-full rounded-lg border p-3 text-sm focus-visible:outline-none focus-visible:ring-2"
+          />
+          <p className="text-muted-foreground text-xs">Dot will receive your instruction with the original email and task history.</p>
+          <Button type="submit" size="sm" disabled={!reply.trim() || mutation.isPending}>
+            {mutation.isPending ? 'Sending…' : 'Send to Dot'}
+          </Button>
+        </form>
+      )}
       {current.status === 'reported' && result && (
         <div className="space-y-2">
           <Button
             size="sm"
+            variant="outline"
             disabled={accept.isPending}
             onClick={() =>
               accept.mutate({
