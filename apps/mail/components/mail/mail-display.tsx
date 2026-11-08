@@ -23,6 +23,7 @@ import {
   HardDriveDownload,
   Loader2,
   CopyIcon,
+  Bot,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -30,9 +31,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import { Dialog, DialogTitle, DialogHeader, DialogContent, DialogDescription } from '../ui/dialog';
 import { cn, formatDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
-import { Dialog, DialogTitle, DialogHeader, DialogContent } from '../ui/dialog';
 import { memo, useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { DelegationWorkspace, type DelegationDraft } from './mail-delegation';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { useOptimisticThreadState } from './optimistic-thread-state';
@@ -136,7 +138,7 @@ const StreamingText = ({ text }: { text: string }) => {
     <div className="flex items-center gap-2">
       <div
         className={cn(
-          'bg-linear-to-r from-neutral-500 via-neutral-300 to-neutral-500 bg-size-[200%_100%] bg-clip-text text-sm leading-relaxed text-transparent',
+          'bg-linear-to-r bg-size-[200%_100%] from-neutral-500 via-neutral-300 to-neutral-500 bg-clip-text text-sm leading-relaxed text-transparent',
           isComplete ? 'animate-shine-slow' : '',
         )}
       >
@@ -378,14 +380,14 @@ const ActionButton = ({ onClick, icon, text, shortcut }: ActionButtonProps) => {
       className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131]"
     >
       {icon}
-      <div className="flex items-center justify-center gap-2.5 pr-1 pl-0.5">
+      <div className="flex items-center justify-center gap-2.5 pl-0.5 pr-1">
         <div className="justify-start text-sm leading-none text-black dark:text-white">{text}</div>
       </div>
       {shortcut && (
         <kbd
           className={cn(
             'border-muted-foreground/10 bg-accent h-6 rounded-[6px] border px-1.5 font-mono text-xs leading-6',
-            'ms-auto -me-1 hidden max-h-full items-center md:inline-flex',
+            '-me-1 ms-auto hidden max-h-full items-center md:inline-flex',
           )}
         >
           {shortcut}
@@ -723,6 +725,15 @@ const MailDisplay = ({
     emailData.tags ? emailData.tags.map((l) => l.id) : [],
   );
   const { data: activeConnection } = useActiveConnection();
+  const [delegationDraft, setDelegationDraft] = useState<DelegationDraft | null>(null);
+  const [delegationTaskId, setDelegationTaskId] = useState<string | null>(null);
+  const canDelegate =
+    !demo &&
+    !emailData.isDraft &&
+    !!emailData.id &&
+    !!activeConnection?.email &&
+    (!emailData.connectionId || emailData.connectionId === activeConnection.id);
+
   const [researchSender, setResearchSender] = useState<Sender | null>(null);
   const aiEnabled = useAiEnabled();
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
@@ -1218,7 +1229,7 @@ const MailDisplay = ({
               name={person.name || person.email}
               className="h-5 w-5"
             />
-            <div className="text-panelDark justify-start text-sm leading-none font-medium dark:text-white">
+            <div className="text-panelDark justify-start text-sm font-medium leading-none dark:text-white">
               {person.name || person.email}
             </div>
           </div>
@@ -1402,7 +1413,7 @@ const MailDisplay = ({
                               });
                             }}
                             className={cn(
-                              'max-w-36 truncate font-semibold whitespace-nowrap md:max-w-none',
+                              'max-w-36 truncate whitespace-nowrap font-semibold md:max-w-none',
                               aiEnabled && 'hover:bg-muted',
                             )}
                           >
@@ -1440,7 +1451,7 @@ const MailDisplay = ({
                                     {m['common.mailDisplay.from']()}:
                                   </span>
                                   <div className="ml-3">
-                                    <span className="text-muted-foreground pr-1 font-bold text-nowrap">
+                                    <span className="text-muted-foreground text-nowrap pr-1 font-bold">
                                       {cleanNameDisplay(emailData?.sender?.name)}
                                     </span>
                                     {emailData?.sender?.name !== emailData?.sender?.email && (
@@ -1451,7 +1462,7 @@ const MailDisplay = ({
                                   </div>
                                 </div>
                                 <div className="flex">
-                                  <span className="w-24 text-end text-nowrap text-gray-500">
+                                  <span className="w-24 text-nowrap text-end text-gray-500">
                                     {m['common.mailDisplay.to']()}:
                                   </span>
                                   <span className="text-muted-foreground ml-3 text-nowrap">
@@ -1462,7 +1473,7 @@ const MailDisplay = ({
                                 </div>
                                 {emailData?.replyTo && emailData.replyTo.length > 0 && (
                                   <div className="flex">
-                                    <span className="w-24 text-end text-nowrap text-gray-500">
+                                    <span className="w-24 text-nowrap text-end text-gray-500">
                                       {m['common.mailDisplay.replyTo']()}:
                                     </span>
                                     <span className="text-muted-foreground ml-3 text-nowrap">
@@ -1538,12 +1549,12 @@ const MailDisplay = ({
                         </div>
 
                         <div className="flex items-center justify-center">
-                          <div className="text-muted-foreground mr-2 flex flex-col flex-nowrap! items-end text-sm font-medium dark:text-[#8C8C8C]">
+                          <div className="text-muted-foreground flex-nowrap! mr-2 flex flex-col items-end text-sm font-medium dark:text-[#8C8C8C]">
                             <time className="whitespace-nowrap">
                               {emailData?.receivedOn ? formatDate(emailData.receivedOn) : ''}
                             </time>
                             {shouldShowSeparateTime(emailData?.receivedOn) && (
-                              <time className="text-xs whitespace-nowrap opacity-75">
+                              <time className="whitespace-nowrap text-xs opacity-75">
                                 {emailData?.receivedOn && formatTime(emailData.receivedOn)}
                               </time>
                             )}
@@ -1557,7 +1568,7 @@ const MailDisplay = ({
                                   e.stopPropagation();
                                   e.preventDefault();
                                 }}
-                                className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-md bg-white focus:ring-0 focus:outline-none dark:bg-[#313131]"
+                                className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-md bg-white focus:outline-none focus:ring-0 dark:bg-[#313131]"
                               >
                                 <ThreeDots className="fill-iconLight dark:fill-iconDark" />
                               </button>
@@ -1741,7 +1752,7 @@ const MailDisplay = ({
                           <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">
                             {attachment.filename}
                           </span>{' '}
-                          <span className="text-muted-foreground text-sm whitespace-nowrap dark:text-[#929292]">
+                          <span className="text-muted-foreground whitespace-nowrap text-sm dark:text-[#929292]">
                             {formatFileSize(attachment.size)}
                           </span>
                         </button>
@@ -1758,7 +1769,7 @@ const MailDisplay = ({
                     ))}
                   </div>
                 ) : null}
-                <div className="my-2.5 flex gap-2 px-4">
+                <div className="my-2.5 flex flex-wrap gap-2 px-4">
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1792,12 +1803,62 @@ const MailDisplay = ({
                     text={m['common.mail.forward']()}
                     shortcut={isLastEmail ? 'f' : undefined}
                   />
+                  {canDelegate && (
+                    <ActionButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (!activeConnection?.email) return;
+                        setDelegationDraft({
+                          instruction: '',
+                          sources: [
+                            {
+                              account: activeConnection.email.toLowerCase(),
+                              messageId: emailData.id,
+                              subject: emailData.subject || '(No subject)',
+                            },
+                          ],
+                        });
+                      }}
+                      icon={<Bot className="size-4" aria-hidden />}
+                      text="Delegate to Dot"
+                    />
+                  )}
                 </div>
               </div>
             </div>
           </div>
         </div>
       </>
+      {(delegationDraft || delegationTaskId) && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setDelegationDraft(null);
+              setDelegationTaskId(null);
+            }
+          }}
+        >
+          <DialogContent
+            showOverlay
+            className="max-h-[85dvh] w-[calc(100%-2rem)] overflow-y-auto"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <DialogHeader>
+              <DialogTitle>Delegate to Dot</DialogTitle>
+              <DialogDescription>This message will be attached as context.</DialogDescription>
+            </DialogHeader>
+            <DelegationWorkspace
+              draft={delegationDraft}
+              clearDraft={() => setDelegationDraft(null)}
+              activeTaskId={delegationTaskId}
+              setActiveTaskId={setDelegationTaskId}
+              tasks={[]}
+              unavailable={false}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 };
