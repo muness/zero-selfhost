@@ -1,7 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { createDb } from '../db';
 import { env } from '../env';
-import { z } from 'zod';
 
 type Sql = ReturnType<typeof createDb>['conn'];
 export type DelegationSource = {
@@ -143,32 +142,4 @@ export async function delegationEvents(sql: Sql, userId: string, taskId: string,
     ),
     nextCursor: rows.length > 50 ? page.at(-1)?.sequence : undefined,
   };
-}
-
-const projectTargetsSchema = z
-  .array(
-    z.object({
-      id: z.string().min(1).max(200),
-      name: z.string().min(1).max(500),
-      repository: z.string().url().max(2000),
-      allowWrites: z.boolean(),
-    }),
-  )
-  .max(100);
-
-export async function listDelegationProjects() {
-  try {
-    const response = await fetch('http://mail-index:8000/mail-jobs/projects', {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) throw new Error('Project configuration unavailable');
-    return projectTargetsSchema.parse(await response.json());
-  } catch (cause) {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'Could not load the configured project targets. Try again shortly.',
-      cause,
-    });
-  }
 }

@@ -3,10 +3,8 @@ import {
   listDelegations,
   getDelegation,
   delegationEvents,
-  listDelegationProjects,
 } from '../../lib/mail-delegation';
 import { privateProcedure, router } from '../trpc';
-import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
 const taskId = z.string().min(1).max(200);
@@ -20,7 +18,6 @@ const source = z.object({
 });
 
 export const mailDelegationRouter = router({
-  projects: privateProcedure.query(() => listDelegationProjects()),
   list: privateProcedure
     .input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional())
     .query(({ ctx, input }) =>
@@ -55,7 +52,6 @@ export const mailDelegationRouter = router({
     .input(
       z.object({
         instruction: z.string().trim().min(1).max(12000),
-        allowProjectWrites: z.boolean().default(false),
         projectHint: z.string().trim().min(1).max(2000).optional(),
         sources: z.array(source).min(1).max(100),
         requestKey,
@@ -63,25 +59,9 @@ export const mailDelegationRouter = router({
     )
     .mutation(({ ctx, input }) =>
       withDelegationDb(async (sql) => {
-        let authorizedScope = input.instruction;
-        if (input.allowProjectWrites) {
-          const project = (await listDelegationProjects()).find(
-            (target) => target.id === input.projectHint,
-          );
-          if (!project?.allowWrites)
-            throw new TRPCError({
-              code: 'BAD_REQUEST',
-              message:
-                'Choose a configured repository that allows changes before authorizing project writes.',
-            });
-          authorizedScope = JSON.stringify({
-            instruction: input.instruction,
-            projectWrites: [project.id],
-          });
-        }
         const [row] = await sql<{ task: { id: string } }[]>`
         SELECT mail_store.delegation_create_task(
-          ${ctx.sessionUser.id},${input.instruction},${authorizedScope},
+          ${ctx.sessionUser.id},${input.instruction},${input.instruction},
           ${input.projectHint ?? null},${JSON.stringify(input.sources)}::jsonb,${input.requestKey}
         ) AS task`;
         return getDelegation(sql, ctx.sessionUser.id, row.task.id);

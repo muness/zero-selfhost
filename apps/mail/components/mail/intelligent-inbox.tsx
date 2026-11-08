@@ -1,4 +1,5 @@
-import { DelegationWorkspace, delegationStatus, type DelegationDraft } from './mail-delegation';
+import { DelegationWorkspace, type DelegationDraft } from './mail-delegation';
+import { MailActionStatus } from './mail-action-status';
 import { Archive, ArrowUp, Check, ChevronDown, Loader2, Star, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -18,7 +19,11 @@ type Insight = InboxData['attention'][number];
 type Proposal = inferRouterOutputs<AppRouter>['intelligentInbox']['plan'];
 type DelegatedTask = inferRouterOutputs<AppRouter>['mailDelegation']['get'];
 export type IntelligenceView = 'inbox' | 'all-mail' | 'expenses' | 'rules' | 'activity';
-export type OpenableMail = { id: string; connectionId: string; summary?: { hasUnread?: boolean } };
+export type OpenableMail = {
+  id: string;
+  connectionId: string;
+  summary?: { hasUnread?: boolean } | null;
+};
 
 const mailKey = (item: Insight) => JSON.stringify([item.account, item.messageId]);
 const actionLabels = { archive: 'Archive', star: 'Star for expenses', unsubscribe: 'Unsubscribe' };
@@ -30,10 +35,12 @@ const businessLabels = {
 
 export function IntelligentInbox({
   view,
+  searchQuery,
   onOpen,
   enabled,
 }: {
   view: IntelligenceView;
+  searchQuery: string;
   onOpen: (mail: OpenableMail) => Promise<void>;
   enabled: boolean;
 }) {
@@ -44,8 +51,6 @@ export function IntelligentInbox({
   );
   const { optimisticMoveThreadsTo, optimisticToggleStar } = useOptimisticActions();
   const [instruction, setInstruction] = useState('');
-  const [searchText, setSearchText] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const search = useQuery(
     trpc.intelligentInbox.search.queryOptions(
       { query: searchQuery, limit: 100 },
@@ -59,6 +64,17 @@ export function IntelligentInbox({
     ),
   );
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const pendingProposal = useQuery(
+    trpc.intelligentInbox.latestPendingPlan.queryOptions(undefined, {
+      enabled: !proposal && view === 'inbox',
+    }),
+  );
+  const [reply, setReply] = useState('');
+  const [replyQuestion, setReplyQuestion] = useState('');
+  const [priorProposal, setPriorProposal] = useState<{
+    proposal: Proposal;
+    chosen: Set<string>;
+  } | null>(null);
   const [delegationDraft, setDelegationDraft] = useState<DelegationDraft | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const delegations = useQuery(
@@ -67,7 +83,13 @@ export function IntelligentInbox({
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [focused, setFocused] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [contextItem, setContextItem] = useState<Insight | null>(null);
+  const source = useQuery(
+    trpc.mailSource.get.queryOptions(
+      { account: contextItem?.account ?? '', messageId: contextItem?.messageId ?? '' },
+      { enabled: !!contextItem },
+    ),
+  );
   const textRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const refresh = useCallback(async () => {
@@ -87,19 +109,25 @@ export function IntelligentInbox({
   );
   const plan = useMutation(
     trpc.intelligentInbox.plan.mutationOptions({
-      onSuccess: (result) => {
+      onSuccess: (result, input) => {
+        if (input.followUp && proposal) setPriorProposal({ proposal, chosen });
+        else setPriorProposal(null);
+        setReply('');
+        setReplyQuestion('');
         setProposal(result);
         setChosen(new Set(result.operations.map((operation) => operation.id)));
       },
-      onError: (error) => toast.error(error.message),
+      onError: () => {}, // The form keeps the instruction and shows a retryable error below.
     }),
   );
   const apply = useMutation(
     trpc.intelligentInbox.applyPlan.mutationOptions({
       onSuccess: async (result) => {
         await refresh();
-        setProposal(null);
-        setInstruction('');
+        setProposal(priorProposal?.proposal ?? null);
+        setChosen(priorProposal?.chosen ?? new Set());
+        setPriorProposal(null);
+        if (!priorProposal) setInstruction('');
         toast.success(`${result.applied} instructions applied`);
       },
       onError: (error) => toast.error(error.message),
@@ -151,15 +179,16 @@ export function IntelligentInbox({
   }, [data, hiddenIds]);
   const noise = useMemo(() => [...noiseGroups.values()].map((group) => group[0]), [noiseGroups]);
   const items = useMemo(() => [...attention, ...noise], [attention, noise]);
-  const tasksByMessage = useMemo(() => {
-    const map = new Map<string, DelegatedTask>();
-    for (const task of delegations.data ?? [])
-      for (const source of task.sources) {
-        const key = JSON.stringify([source.account, source.messageId]);
-        if (!map.has(key)) map.set(key, task);
-      }
-    return map;
+  const { openTasks, closedTasks } = useMemo(() => {
+    const openTasks: DelegatedTask[] = [];
+    const closedTasks: DelegatedTask[] = [];
+    for (const task of delegations.data ?? []) {
+      if (task.status === 'accepted' || task.status === 'cancelled') closedTasks.push(task);
+      else openTasks.push(task);
+    }
+    return { openTasks, closedTasks };
   }, [delegations.data]);
+  const visibleTasks = view === 'activity' ? [...openTasks, ...closedTasks] : openTasks;
   const beginDelegation = (sources: Insight[]) => {
     if (!sources.length) {
       toast.info('Select a source message to delegate.');
@@ -170,14 +199,6 @@ export function IntelligentInbox({
       sources: sources.map(({ account, messageId, subject }) => ({ account, messageId, subject })),
       instruction,
     });
-    requestAnimationFrame(() =>
-      document
-        .getElementById('mail-delegation')
-        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
-    );
-  };
-  const showDelegation = (id: string) => {
-    setActiveTaskId(id);
     requestAnimationFrame(() =>
       document
         .getElementById('mail-delegation')
@@ -280,515 +301,697 @@ export function IntelligentInbox({
     ],
   );
 
+  const answering = !!proposal?.questions.length && !priorProposal;
+  const sendInstruction = () => {
+    if (plan.isPending || apply.isPending) return;
+    if (answering && proposal) {
+      if (!reply.trim() || (proposal.questions.length > 1 && replyQuestion === '')) return;
+      plan.mutate({
+        text: reply.trim(),
+        context: contextItem
+          ? { account: contextItem.account, messageId: contextItem.messageId }
+          : undefined,
+        followUp: {
+          planId: proposal.id,
+          question: proposal.questions.length === 1 ? 0 : Number(replyQuestion),
+        },
+      });
+    } else if (instruction.trim()) {
+      plan.mutate({
+        text: instruction.trim(),
+        context: contextItem
+          ? { account: contextItem.account, messageId: contextItem.messageId }
+          : undefined,
+      });
+    }
+  };
   const ask = (text: string) => {
     setInstruction(text);
     setProposal(null);
     textRef.current?.focus();
   };
   return (
-    <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-3 pb-10 sm:px-6">
-      <div className="mx-auto max-w-5xl">
-        <form
-          className="border-border bg-background my-4 rounded-xl border p-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (instruction.trim()) plan.mutate({ text: instruction.trim() });
-          }}
-        >
-          <label htmlFor="inbox-instruction" className="mb-2 block text-sm font-medium">
-            Ask or tell Zero
-          </label>
-          <textarea
-            id="inbox-instruction"
-            ref={textRef}
-            value={instruction}
-            onChange={(event) => {
-              setInstruction(event.target.value);
-              if (proposal) setProposal(null);
+    <div className="flex min-h-0 flex-1">
+      <div ref={listRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-10 sm:px-6">
+        <div className="mx-auto max-w-5xl">
+          <form
+            className="border-border bg-background my-4 rounded-xl border p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (instruction.trim() && !plan.isPending && !apply.isPending)
+                plan.mutate({ text: instruction.trim() });
             }}
-            rows={instruction.includes('\n') ? 3 : 1}
-            placeholder="Find receipts, unsubscribe, or say “Always archive Audible purchases…”"
-            className="placeholder:text-muted-foreground focus-visible:ring-ring w-full resize-y bg-transparent text-sm outline-none focus-visible:ring-2"
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault();
-                if (instruction.trim()) plan.mutate({ text: instruction.trim() });
-              }
-            }}
-          />
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <span className="text-muted-foreground text-xs">Ctrl / ⌘ + Enter</span>
-            {selected.size > 0 && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={plan.isPending || apply.isPending}
-                onClick={() => beginDelegation(items.filter((item) => selected.has(mailKey(item))))}
-              >
-                Delegate selected
-              </Button>
-            )}
-            <Button
-              type="submit"
-              size="sm"
-              disabled={!instruction.trim() || plan.isPending || apply.isPending}
-              aria-label="Send instructions"
-            >
-              {plan.isPending ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <ArrowUp className="mr-2 size-4" />
-              )}
-              Send
-            </Button>
-          </div>
-        </form>
-        {(delegationDraft ||
-          activeTaskId ||
-          (delegations.data?.length ?? 0) > 0 ||
-          delegations.isError) && (
-          <DelegationWorkspace
-            draft={delegationDraft}
-            clearDraft={() => setDelegationDraft(null)}
-            activeTaskId={activeTaskId}
-            setActiveTaskId={setActiveTaskId}
-            tasks={delegations.data ?? []}
-            unavailable={delegations.isError}
-          />
-        )}
-        {proposal && (
-          <section
-            aria-label="Interpreted instructions"
-            className="border-border mb-6 border-b pb-5"
           >
-            <p className="mb-3 whitespace-pre-wrap text-sm leading-relaxed">{proposal.answer}</p>
-            {proposal.operations.map((operation) => (
-              <label key={operation.id} className="flex items-start gap-3 py-2">
-                <input
-                  type="checkbox"
-                  checked={chosen.has(operation.id)}
-                  onChange={() => setChosen(toggle(chosen, operation.id))}
-                  className="mt-1 size-4 shrink-0"
-                />
-                <span className="text-sm">
-                  <span className="text-muted-foreground mr-2 text-xs font-medium">
-                    {operation.kind === 'rule' ? 'From now on' : 'Do now'}
-                  </span>
-                  {operation.title}
-                  {operation.reason && (
-                    <span className="text-muted-foreground mt-1 block text-xs">
-                      {operation.reason}
-                    </span>
-                  )}
-                </span>
-              </label>
-            ))}
-            {proposal.results.length > 0 && (
-              <details className="my-3">
-                <summary className="cursor-pointer text-sm">
-                  {proposal.results.length} matching messages
-                </summary>
-                <MailResults items={proposal.results} onOpen={onOpen} />
-              </details>
-            )}
-            {proposal.questions.map((question) => (
-              <p key={question} className="my-2 text-sm text-amber-700 dark:text-amber-300">
-                {question}
-              </p>
-            ))}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {proposal.operations.length > 0 && (
+            <label htmlFor="inbox-instruction" className="sr-only">
+              Ask Zero or describe what you want done
+            </label>
+            <textarea
+              id="inbox-instruction"
+              ref={textRef}
+              value={instruction}
+              disabled={plan.isPending || apply.isPending}
+              onChange={(event) => {
+                setInstruction(event.target.value);
+                if (plan.isError) plan.reset();
+                if (proposal) setProposal(null);
+              }}
+              rows={instruction.includes('\n') ? 3 : 1}
+              placeholder={
+                answering
+                  ? 'Reply to the question below…'
+                  : 'Ask Zero or describe what you want done…'
+              }
+              className="placeholder:text-muted-foreground focus-visible:ring-ring w-full resize-y bg-transparent text-sm outline-none focus-visible:ring-2"
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault();
+                  if (instruction.trim() && !plan.isPending && !apply.isPending)
+                    plan.mutate({ text: instruction.trim() });
+                }
+              }}
+            />
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-muted-foreground hidden text-xs sm:inline">
+                Ctrl / ⌘ + Enter
+              </span>
+              {selected.size > 0 && (
                 <Button
+                  type="button"
+                  variant="outline"
                   size="sm"
-                  disabled={!chosen.size || apply.isPending}
-                  onClick={() => apply.mutate({ id: proposal.id, operationIds: [...chosen] })}
+                  disabled={plan.isPending || apply.isPending}
+                  onClick={() =>
+                    beginDelegation(items.filter((item) => selected.has(mailKey(item))))
+                  }
                 >
-                  {apply.isPending ? 'Applying…' : `Apply ${chosen.size} selected`}
+                  Delegate selected
                 </Button>
               )}
               <Button
+                type="submit"
                 size="sm"
-                variant="outline"
-                onClick={() => {
-                  setProposal(null);
-                  textRef.current?.focus();
-                }}
+                disabled={
+                  !(answering ? reply : instruction).trim() ||
+                  plan.isPending ||
+                  apply.isPending ||
+                  (answering && !!proposal && proposal.questions.length > 1 && replyQuestion === '')
+                }
+                aria-label="Send instructions"
               >
-                Edit instructions
+                {plan.isPending ? (
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                ) : (
+                  <ArrowUp className="mr-2 size-4" />
+                )}
+                {plan.isPending ? 'Preparing proposal…' : answering ? 'Reply' : 'Send'}
               </Button>
             </div>
-          </section>
-        )}
-        {query.isLoading && (
-          <p role="status" className="text-muted-foreground py-8 text-sm">
-            Loading your inbox…
-          </p>
-        )}
-        {query.isError && (
-          <div role="alert" className="py-8 text-sm">
-            <p>Couldn’t load your inbox.</p>
-            <Button variant="outline" className="mt-3" onClick={() => void query.refetch()}>
-              Try again
+          </form>
+          {plan.isError && (
+            <p role="alert" className="text-destructive my-3 text-sm">
+              {/unexpected end of json|failed to fetch|network|load failed/i.test(plan.error.message)
+                ? 'Couldn’t reach Zero. Your text is still here; try Send again.'
+                : plan.error.message}
+            </p>
+          )}
+          {(delegationDraft ||
+            activeTaskId ||
+            (view === 'activity' &&
+              (visibleTasks.length > 0 || (delegations.isError && !delegations.data)))) && (
+            <DelegationWorkspace
+              draft={delegationDraft}
+              clearDraft={() => setDelegationDraft(null)}
+              activeTaskId={activeTaskId}
+              setActiveTaskId={setActiveTaskId}
+              tasks={visibleTasks}
+              unavailable={delegations.isError}
+            />
+          )}
+          {!proposal && !plan.isPending && view === 'inbox' && pendingProposal.data && (
+            <Button
+              className="mb-3"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const saved = pendingProposal.data;
+                if (!saved) return;
+                setInstruction(saved.text);
+                setProposal(saved);
+                setChosen(new Set(saved.operations.map((operation) => operation.id)));
+                plan.reset();
+              }}
+            >
+              Resume last proposal
             </Button>
-          </div>
-        )}
-        {data && view === 'inbox' && (
-          <>
-            {data.status.workerError && (
-              <p role="status" className="mb-4 text-sm text-amber-700 dark:text-amber-300">
-                Suggestions are delayed. Your mail is still available.
-              </p>
-            )}
-            {data.status.pending > 0 && (
-              <p role="status" className="text-muted-foreground mb-4 text-xs">
-                Sorting {data.status.pending} messages…
-              </p>
-            )}
-            {!data.status.aiAvailable && (
-              <p role="status" className="text-muted-foreground mb-4 text-sm">
-                Suggestions are temporarily unavailable.
-              </p>
-            )}
-            {selected.size > 0 && (
-              <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-                <span>{selected.size} selected</span>
+          )}
+          {proposal && (
+            <section
+              aria-label="Interpreted instructions"
+              className="border-border mb-6 border-b pb-5"
+            >
+              <p className="mb-3 whitespace-pre-wrap text-sm leading-relaxed">{proposal.answer}</p>
+              {proposal.operations.map((operation) => (
+                <label key={operation.id} className="flex items-start gap-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={chosen.has(operation.id)}
+                    onChange={() => setChosen(toggle(chosen, operation.id))}
+                    className="mt-1 size-4 shrink-0"
+                  />
+                  <span className="text-sm">
+                    <span className="text-muted-foreground mr-2 text-xs font-medium">
+                      {operation.kind === 'rule' ? 'From now on' : 'Do now'}
+                    </span>
+                    {operation.title}
+                    {operation.reason && (
+                      <span className="text-muted-foreground mt-1 block text-xs">
+                        {operation.reason}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))}
+              {proposal.results.length > 0 && (
+                <details className="my-3">
+                  <summary className="cursor-pointer text-sm">
+                    {proposal.results.length} matching messages
+                  </summary>
+                  <MailResults items={proposal.results} onOpen={onOpen} />
+                </details>
+              )}
+              {proposal.questions.map((question) => (
+                <p key={question} className="my-2 text-sm text-amber-700 dark:text-amber-300">
+                  {question}
+                </p>
+              ))}
+              {proposal.questions.length > 1 && !priorProposal && (
+                <select
+                  aria-label="Question to reply to"
+                  value={replyQuestion}
+                  onChange={(event) => setReplyQuestion(event.target.value)}
+                  className="border-border bg-background my-3 w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  <option value="">Choose a question to reply to</option>
+                  {proposal.questions.map((question, index) => (
+                    <option key={index} value={index}>
+                      {question}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {proposal.operations.length > 0 && (
+                  <Button
+                    size="sm"
+                    disabled={!chosen.size || apply.isPending || plan.isPending}
+                    onClick={() => apply.mutate({ id: proposal.id, operationIds: [...chosen] })}
+                  >
+                    {apply.isPending ? 'Applying…' : `Apply ${chosen.size} selected`}
+                  </Button>
+                )}
                 <Button
-                  variant="outline"
                   size="sm"
+                  variant="outline"
+                  disabled={plan.isPending || apply.isPending}
                   onClick={() => {
-                    for (const item of items.filter((item) => selected.has(mailKey(item))))
-                      optimisticMoveThreadsTo(
-                        [item.threadId],
-                        'inbox',
-                        'archive',
-                        item.connectionId,
-                      );
-                    setSelected(new Set());
+                    setProposal(priorProposal?.proposal ?? null);
+                    setChosen(priorProposal?.chosen ?? new Set());
+                    setPriorProposal(null);
+                    setReply('');
+                    setReplyQuestion('');
+                    if (!priorProposal) textRef.current?.focus();
                   }}
                 >
-                  Archive · E
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    for (const item of items.filter((item) => selected.has(mailKey(item))))
-                      optimisticToggleStar([item.threadId], !isStarred(item), item.connectionId);
-                  }}
-                >
-                  Star · S
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
-                  Clear
+                  {priorProposal ? 'Back to previous proposal' : 'Edit instructions'}
                 </Button>
               </div>
-            )}
-            {[
-              { title: 'Worth your attention', rows: attention },
-              { title: 'Cut the noise', rows: noise },
-            ].map(({ title, rows }) => (
-              <section key={title} className="mb-8">
-                <h2 className="mb-2 text-base font-semibold">{title}</h2>
-                {!rows.length && (
-                  <p className="text-muted-foreground py-3 text-sm">
-                    {title === 'Worth your attention'
-                      ? 'Nothing here yet. Browse All Mail to see everything.'
-                      : 'No suggestions right now.'}
-                  </p>
-                )}
-                <div className="divide-border divide-y">
-                  {rows.map((item) => {
-                    const key = mailKey(item);
-                    const index = items.indexOf(item);
-                    const group = item.listId
-                      ? noiseGroups.get(JSON.stringify([item.account, item.listId]))
-                      : undefined;
-                    const sourceTask =
-                      tasksByMessage.get(key) ??
-                      group?.map((source) => tasksByMessage.get(mailKey(source))).find(Boolean);
-                    return (
-                      <article
-                        key={key}
-                        data-mail-index={index}
-                        className={cn(
-                          'py-3',
-                          focused === key && 'ring-ring rounded-lg ring-1 ring-inset',
-                        )}
-                      >
-                        <div className="flex items-start gap-3 px-2">
-                          <input
-                            type="checkbox"
-                            aria-label={`Select ${item.subject}`}
-                            className="mt-1 size-4 shrink-0"
-                            checked={selected.has(key)}
-                            onChange={() => {
-                              setFocused(key);
-                              setSelected(toggle(selected, key));
-                            }}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <button
-                              className="focus-visible:ring-ring block w-full text-left focus-visible:outline-none focus-visible:ring-2"
-                              onFocus={() => setFocused(key)}
-                              onClick={() => void open(item)}
-                            >
-                              <span className="block truncate text-sm font-medium">
-                                {item.subject || '(No subject)'}
-                              </span>
-                              <span className="text-muted-foreground mt-1 block truncate text-xs">
-                                {item.sender.name || item.sender.email} · {item.account}
-                              </span>
-                            </button>
-                            {group && group.length > 1 && (
-                              <p className="text-muted-foreground mt-2 text-xs">
-                                {group.length} messages from this mailing list
-                              </p>
-                            )}
-                            <p className="text-muted-foreground mt-1 line-clamp-2 text-sm leading-relaxed">
-                              {item.summary || item.reason}
-                            </p>
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              {item.suggestedAction && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={act.isPending}
-                                  onClick={() => {
-                                    if (
-                                      item.suggestedAction === 'unsubscribe' &&
-                                      !item.unsubscribeAvailable
-                                    ) {
-                                      if (
-                                        item.unsubscribeUrl &&
-                                        /^https?:\/\//i.test(item.unsubscribeUrl)
-                                      )
-                                        window.open(
-                                          item.unsubscribeUrl,
-                                          '_blank',
-                                          'noopener,noreferrer',
-                                        );
-                                      else void open(item);
-                                    } else
-                                      act.mutate({
-                                        account: item.account,
-                                        messageId: item.messageId,
-                                        action:
-                                          item.suggestedAction === 'star'
-                                            ? 'expense'
-                                            : item.suggestedAction!,
-                                      });
-                                  }}
-                                >
-                                  {item.suggestedAction === 'unsubscribe' &&
-                                  !item.unsubscribeAvailable
-                                    ? 'Unsubscribe options'
-                                    : actionLabels[item.suggestedAction]}
-                                </Button>
-                              )}
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => beginDelegation(group ?? [item])}
-                              >
-                                Delegate
-                              </Button>
-                              {sourceTask && (
-                                <button
-                                  className="text-xs underline underline-offset-4"
-                                  onClick={() => showDelegation(sourceTask.id)}
-                                >
-                                  {delegationStatus(sourceTask.status)}
-                                </button>
-                              )}
+            </section>
+          )}
+          {query.isLoading && (
+            <p role="status" className="text-muted-foreground py-8 text-sm">
+              Loading your inbox…
+            </p>
+          )}
+          {query.isError && (
+            <div role="alert" className="py-8 text-sm">
+              <p>Couldn’t load your inbox.</p>
+              <Button variant="outline" className="mt-3" onClick={() => void query.refetch()}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {data && view === 'inbox' && (
+            <>
+              {data.status.workerError && (
+                <p role="status" className="mb-4 text-sm text-amber-700 dark:text-amber-300">
+                  Suggestions are delayed. Your mail is still available.
+                </p>
+              )}
+              {data.status.pending > 0 && (
+                <p role="status" className="text-muted-foreground mb-4 text-xs">
+                  Sorting {data.status.pending} messages…
+                </p>
+              )}
+              {!data.status.aiAvailable && (
+                <p role="status" className="text-muted-foreground mb-4 text-sm">
+                  Suggestions are temporarily unavailable.
+                </p>
+              )}
+              {selected.size > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                  <span>{selected.size} selected</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      for (const item of items.filter((item) => selected.has(mailKey(item))))
+                        optimisticMoveThreadsTo(
+                          [item.threadId],
+                          'inbox',
+                          'archive',
+                          item.connectionId,
+                        );
+                      setSelected(new Set());
+                    }}
+                  >
+                    Archive · E
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      for (const item of items.filter((item) => selected.has(mailKey(item))))
+                        optimisticToggleStar([item.threadId], !isStarred(item), item.connectionId);
+                    }}
+                  >
+                    Star · S
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+                    Clear
+                  </Button>
+                </div>
+              )}
+              <MailActionStatus />
+              {[{ title: 'Needs you', rows: items }].map(({ title, rows }) => (
+                <section key={title} className="mb-8">
+                  <h2 className="mb-2 text-base font-semibold">{title}</h2>
+                  {!rows.length && (
+                    <p className="text-muted-foreground py-3 text-sm">
+                      Nothing needs your attention. Search Mail to find a message.
+                    </p>
+                  )}
+                  <div className="space-y-2">
+                    {rows.map((item) => {
+                      const key = mailKey(item);
+                      const index = items.indexOf(item);
+                      const group = item.listId
+                        ? noiseGroups.get(JSON.stringify([item.account, item.listId]))
+                        : undefined;
+                      return (
+                        <article
+                          key={key}
+                          data-mail-index={index}
+                          className={cn(
+                            'border-border bg-background rounded-xl border py-3',
+                            focused === key && 'ring-ring rounded-lg ring-1 ring-inset',
+                          )}
+                        >
+                          <div className="flex items-start gap-3 px-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${item.subject}`}
+                              className="mt-1 size-4 shrink-0"
+                              checked={selected.has(key)}
+                              onChange={() => {
+                                setFocused(key);
+                                setSelected(toggle(selected, key));
+                              }}
+                            />
+                            <div className="min-w-0 flex-1">
                               <button
-                                aria-expanded={expanded.has(key)}
-                                className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                                onClick={() => setExpanded(toggle(expanded, key))}
+                                className="focus-visible:ring-ring block w-full text-left focus-visible:outline-none focus-visible:ring-2"
+                                onFocus={() => setFocused(key)}
+                                onClick={() => void open(item)}
                               >
-                                Details
-                                <ChevronDown
-                                  className={cn('size-3', expanded.has(key) && 'rotate-180')}
-                                />
+                                <span className="block truncate text-sm font-medium">
+                                  {item.subject || '(No subject)'}
+                                </span>
+                                <span className="text-muted-foreground mt-1 block truncate text-xs">
+                                  {item.sender.name || item.sender.email} · {item.account}
+                                </span>
                               </button>
-                            </div>
-                            {expanded.has(key) && (
-                              <div className="text-muted-foreground mt-3 space-y-2 text-sm">
-                                <p>{item.reason}</p>
+                              {group && group.length > 1 && (
+                                <p className="text-muted-foreground mt-2 text-xs">
+                                  {group.length} messages from this mailing list
+                                </p>
+                              )}
+                              <p className="text-muted-foreground mt-1 line-clamp-2 text-sm leading-relaxed">
+                                {item.summary || item.reason}
+                              </p>
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                {item.suggestedAction &&
+                                  (item.suggestedAction !== 'star' ||
+                                    item.category === 'receipt') && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={act.isPending}
+                                      onClick={() => {
+                                        if (
+                                          item.suggestedAction === 'unsubscribe' &&
+                                          !item.unsubscribeAvailable
+                                        ) {
+                                          if (
+                                            item.unsubscribeUrl &&
+                                            /^https?:\/\//i.test(item.unsubscribeUrl)
+                                          )
+                                            window.open(
+                                              item.unsubscribeUrl,
+                                              '_blank',
+                                              'noopener,noreferrer',
+                                            );
+                                          else void open(item);
+                                        } else
+                                          act.mutate({
+                                            account: item.account,
+                                            messageId: item.messageId,
+                                            action:
+                                              item.suggestedAction === 'star'
+                                                ? 'expense'
+                                                : item.suggestedAction!,
+                                          });
+                                      }}
+                                    >
+                                      {item.suggestedAction === 'unsubscribe' &&
+                                      !item.unsubscribeAvailable
+                                        ? 'Unsubscribe options'
+                                        : actionLabels[item.suggestedAction]}
+                                    </Button>
+                                  )}
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  onClick={() =>
-                                    ask(
-                                      `For mail like this, ${item.reason}. Sender: ${item.sender.email}. Subject: ${item.subject}. Suggest a precise ongoing rule and show its scope before applying.`,
-                                    )
-                                  }
+                                  onClick={() => beginDelegation(group ?? [item])}
                                 >
-                                  Automate similar mail
+                                  Delegate
                                 </Button>
-
-                                {group && group.length > 1 && (
-                                  <MailResults items={group} onOpen={onOpen} />
-                                )}
-                                <p>Received {new Date(item.receivedAt).toLocaleString()}</p>
                                 <button
-                                  className="underline underline-offset-4"
-                                  onClick={() => void open(item)}
-                                >
-                                  Read the original email
-                                </button>
-                                <button
-                                  className="ml-4 underline underline-offset-4"
-                                  disabled={act.isPending}
-                                  onClick={() =>
-                                    act.mutate({
-                                      account: item.account,
-                                      messageId: item.messageId,
-                                      action: 'dismiss',
-                                    })
+                                  aria-label={`Details for ${item.subject || 'message'}`}
+                                  aria-expanded={
+                                    contextItem !== null && mailKey(contextItem) === key
                                   }
+                                  className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
+                                  onClick={() => setContextItem(item)}
                                 >
-                                  Dismiss suggestion
+                                  Details
+                                  <ChevronDown className="size-3" />
                                 </button>
                               </div>
-                            )}
+                            </div>
+                            <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
+                              <button
+                                title={`${isStarred(item) ? 'Unstar' : 'Star'} · S`}
+                                aria-label={isStarred(item) ? 'Unstar' : 'Star'}
+                                aria-pressed={isStarred(item)}
+                                className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
+                                onClick={() =>
+                                  optimisticToggleStar(
+                                    [item.threadId],
+                                    !isStarred(item),
+                                    item.connectionId,
+                                  )
+                                }
+                              >
+                                <Star
+                                  className={cn(
+                                    'size-4',
+                                    isStarred(item) && 'fill-yellow-400 text-yellow-500',
+                                  )}
+                                />
+                              </button>
+                              <button
+                                title="Archive · E"
+                                aria-label="Archive"
+                                className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
+                                onClick={() =>
+                                  optimisticMoveThreadsTo(
+                                    [item.threadId],
+                                    'inbox',
+                                    'archive',
+                                    item.connectionId,
+                                  )
+                                }
+                              >
+                                <Archive className="size-4" />
+                              </button>
+                              <button
+                                title="Move to Bin · D"
+                                aria-label="Move to Bin"
+                                className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
+                                onClick={() =>
+                                  optimisticMoveThreadsTo(
+                                    [item.threadId],
+                                    'inbox',
+                                    'bin',
+                                    item.connectionId,
+                                  )
+                                }
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
-                            <button
-                              title={`${isStarred(item) ? 'Unstar' : 'Star'} · S`}
-                              aria-label={isStarred(item) ? 'Unstar' : 'Star'}
-                              aria-pressed={isStarred(item)}
-                              className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
-                              onClick={() =>
-                                optimisticToggleStar(
-                                  [item.threadId],
-                                  !isStarred(item),
-                                  item.connectionId,
-                                )
-                              }
-                            >
-                              <Star
-                                className={cn(
-                                  'size-4',
-                                  isStarred(item) && 'fill-yellow-400 text-yellow-500',
-                                )}
-                              />
-                            </button>
-                            <button
-                              title="Archive · E"
-                              aria-label="Archive"
-                              className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
-                              onClick={() =>
-                                optimisticMoveThreadsTo(
-                                  [item.threadId],
-                                  'inbox',
-                                  'archive',
-                                  item.connectionId,
-                                )
-                              }
-                            >
-                              <Archive className="size-4" />
-                            </button>
-                            <button
-                              title="Move to Bin · D"
-                              aria-label="Move to Bin"
-                              className="hover:bg-muted focus-visible:ring-ring rounded p-2 focus-visible:ring-2"
-                              onClick={() =>
-                                optimisticMoveThreadsTo(
-                                  [item.threadId],
-                                  'inbox',
-                                  'bin',
-                                  item.connectionId,
-                                )
-                              }
-                            >
-                              <Trash2 className="size-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-            <h2 className="mb-3 text-base font-semibold">Recent activity</h2>
-            <ActivityList events={data.handled.slice(0, 5)} />
-          </>
-        )}
-        {view === 'all-mail' && (
-          <section>
-            <h2 className="mb-3 text-base font-semibold">All Mail</h2>
-            <form
-              className="mb-5 flex gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                setSearchQuery(searchText.trim());
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </>
+          )}
+          {view === 'all-mail' && (
+            <section>
+              <h2 className="mb-3 text-base font-semibold">
+                {searchQuery ? `Search results for “${searchQuery}”` : 'All Mail'}
+              </h2>
+              {search.isLoading && (
+                <p role="status" className="text-muted-foreground text-sm">
+                  Searching your stored mail…
+                </p>
+              )}
+              {search.isError && (
+                <p role="alert" className="text-sm">
+                  Search failed.{' '}
+                  <button className="underline" onClick={() => void search.refetch()}>
+                    Try again
+                  </button>
+                </p>
+              )}
+              {search.data && <MailResults items={search.data} onOpen={onOpen} />}
+            </section>
+          )}
+          {data && view === 'expenses' && (
+            <section>
+              <h2 className="mb-2 text-base font-semibold">Expenses</h2>
+              <p className="text-muted-foreground mb-5 text-sm">
+                Receipts stay here when the email is archived. Choose the business and keep
+                candidates ready for reporting.
+              </p>
+              <ExpenseList
+                expenses={data.expenses}
+                update={updateExpense.mutate}
+                pending={updateExpense.isPending}
+                onOpen={onOpen}
+              />
+            </section>
+          )}
+          {data && view === 'rules' && (
+            <section>
+              <h2 className="mb-2 text-base font-semibold">Your rules</h2>
+              <p className="text-muted-foreground mb-5 text-sm">
+                Tell me what to do from now on in the box above. Pause or revise a rule whenever
+                your preferences change.
+              </p>
+              <RuleList
+                rules={data.rules}
+                update={updateRule.mutateAsync}
+                pending={updateRule.isPending}
+              />
+            </section>
+          )}
+          {data && view === 'activity' && (
+            <section>
+              <h2 className="mb-4 text-base font-semibold">Activity</h2>
+              <ActivityList events={activity.data ?? data.handled} />
+            </section>
+          )}
+        </div>
+      </div>
+      {contextItem && (
+        <aside
+          aria-label="Message context"
+          className="bg-background border-border fixed inset-x-0 bottom-0 z-50 max-h-[75dvh] overflow-y-auto rounded-t-xl border p-5 shadow-lg lg:static lg:z-auto lg:max-h-none lg:w-80 lg:shrink-0 lg:rounded-none lg:border-y-0 lg:border-r-0 lg:shadow-none"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="break-words text-base font-semibold">
+              {contextItem.subject || '(No subject)'}
+            </h2>
+            <button
+              className="text-muted-foreground hover:text-foreground text-sm"
+              onClick={() => setContextItem(null)}
+              aria-label="Close message context"
+            >
+              Close
+            </button>
+          </div>
+          <p className="text-muted-foreground mt-2 break-words text-xs">
+            {contextItem.sender.name || contextItem.sender.email} · {contextItem.account}
+          </p>
+          <h3 className="mt-6 text-sm font-semibold">Why this matters</h3>
+          <p className="text-muted-foreground mt-2 text-sm">{contextItem.reason}</p>
+          {contextItem.listId &&
+            (noiseGroups.get(JSON.stringify([contextItem.account, contextItem.listId]))?.length ??
+              0) > 1 && (
+              <details className="mt-5 text-sm">
+                <summary className="cursor-pointer">Messages in this group</summary>
+                <MailResults
+                  items={
+                    noiseGroups.get(JSON.stringify([contextItem.account, contextItem.listId])) ?? []
+                  }
+                  onOpen={onOpen}
+                />
+              </details>
+            )}
+          <h3 className="mt-5 text-sm font-semibold">Original email</h3>
+          {source.isLoading && (
+            <p role="status" className="text-muted-foreground mt-2 text-sm">
+              Loading original…
+            </p>
+          )}
+          {source.isError && (
+            <p role="alert" className="text-destructive mt-2 text-sm">
+              Couldn’t load the original email.{' '}
+              <button className="underline" onClick={() => void source.refetch()}>
+                Retry
+              </button>
+            </p>
+          )}
+          {source.data && (
+            <div className="border-border bg-muted/30 mt-2 rounded-lg border p-3">
+              <p className="text-muted-foreground whitespace-pre-wrap break-words text-sm">
+                {source.data.parts.join('').slice(0, 4000)}
+              </p>
+              {source.data.parts.join('').length > 4000 && (
+                <p className="text-muted-foreground mt-2 text-xs">
+                  Preview truncated. Open the original to read the rest.
+                </p>
+              )}
+            </div>
+          )}
+          {answering && proposal && proposal.questions.length > 1 && (
+            <select
+              aria-label="Question to reply to"
+              value={replyQuestion}
+              onChange={(event) => setReplyQuestion(event.target.value)}
+              className="border-border bg-background mt-4 w-full rounded-lg border px-2 py-2 text-sm"
+            >
+              <option value="">Choose a question to reply to</option>
+              {proposal.questions.map((question, index) => (
+                <option key={index} value={index}>
+                  {question}
+                </option>
+              ))}
+            </select>
+          )}
+          <form
+            className="border-border bg-background mt-5 flex gap-2 rounded-lg border p-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendInstruction();
+            }}
+          >
+            <input
+              aria-label="Ask Zero about this message"
+              placeholder="Tell Zero what to do next…"
+              value={answering ? reply : instruction}
+              onChange={(event) =>
+                answering ? setReply(event.target.value) : setInstruction(event.target.value)
+              }
+              disabled={plan.isPending || apply.isPending}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+            />
+            <Button
+              size="sm"
+              type="submit"
+              disabled={
+                !(answering ? reply : instruction).trim() ||
+                plan.isPending ||
+                apply.isPending ||
+                (answering && !!proposal && proposal.questions.length > 1 && replyQuestion === '')
+              }
+            >
+              {plan.isPending ? 'Preparing…' : 'Send'}
+            </Button>
+          </form>
+          {proposal && (
+            <div className="border-border mt-4 border-t pt-3 text-sm" aria-live="polite">
+              <p className="whitespace-pre-wrap">{proposal.answer}</p>
+              {proposal.questions.map((question) => (
+                <p key={question} className="mt-2">
+                  {question}
+                </p>
+              ))}
+              <button
+                className="mt-3 underline underline-offset-4"
+                onClick={() => {
+                  setContextItem(null);
+                  listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+              >
+                Review response and actions
+              </button>
+            </div>
+          )}
+          <div className="mt-5 flex flex-wrap gap-3 text-sm">
+            <button className="underline underline-offset-4" onClick={() => void open(contextItem)}>
+              Read original
+            </button>
+            <button
+              className="underline underline-offset-4"
+              onClick={() => {
+                setContextItem(null);
+                beginDelegation([contextItem]);
               }}
             >
-              <input
-                aria-label="Search all mail including archived messages"
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Search all accounts, including archived mail…"
-                className="border-border bg-background focus-visible:ring-ring min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-              />
-              <Button type="submit" variant="outline" disabled={search.isFetching}>
-                Search
-              </Button>
-            </form>
-            {search.isLoading && (
-              <p role="status" className="text-muted-foreground text-sm">
-                Searching your stored mail…
-              </p>
-            )}
-            {search.isError && (
-              <p role="alert" className="text-sm">
-                Search failed.{' '}
-                <button className="underline" onClick={() => void search.refetch()}>
-                  Try again
-                </button>
-              </p>
-            )}
-            {search.data && <MailResults items={search.data} onOpen={onOpen} />}
-          </section>
-        )}
-        {data && view === 'expenses' && (
-          <section>
-            <h2 className="mb-2 text-base font-semibold">Expenses</h2>
-            <p className="text-muted-foreground mb-5 text-sm">
-              Receipts stay here when the email is archived. Choose the business and keep candidates
-              ready for reporting.
-            </p>
-            <ExpenseList
-              expenses={data.expenses}
-              update={updateExpense.mutate}
-              pending={updateExpense.isPending}
-              onOpen={onOpen}
-            />
-          </section>
-        )}
-        {data && view === 'rules' && (
-          <section>
-            <h2 className="mb-2 text-base font-semibold">Your rules</h2>
-            <p className="text-muted-foreground mb-5 text-sm">
-              Tell me what to do from now on in the box above. Pause or revise a rule whenever your
-              preferences change.
-            </p>
-            <RuleList
-              rules={data.rules}
-              update={updateRule.mutateAsync}
-              pending={updateRule.isPending}
-            />
-          </section>
-        )}
-        {data && view === 'activity' && (
-          <section>
-            <h2 className="mb-4 text-base font-semibold">Activity</h2>
-            <ActivityList events={activity.data ?? data.handled} />
-          </section>
-        )}
-      </div>
+              Delegate to Dot
+            </button>
+            <button
+              className="underline underline-offset-4"
+              onClick={() => {
+                ask(
+                  'Suggest a precise ongoing rule for this message and show its scope before applying.',
+                );
+              }}
+            >
+              Automate similar mail
+            </button>
+            <button
+              className="underline underline-offset-4"
+              disabled={act.isPending}
+              onClick={() => {
+                act.mutate({
+                  account: contextItem.account,
+                  messageId: contextItem.messageId,
+                  action: 'dismiss',
+                });
+                setContextItem(null);
+              }}
+            >
+              Dismiss suggestion
+            </button>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

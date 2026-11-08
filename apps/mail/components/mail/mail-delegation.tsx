@@ -18,8 +18,8 @@ export const delegationStatus = (status: string) =>
     requested: 'Requested',
     running: 'Running',
     waiting: 'Needs your answer',
-    reported: 'Result reported · awaiting your acceptance',
-    accepted: 'Accepted by you',
+    reported: 'Result ready',
+    accepted: 'Accepted',
     failed: 'Failed',
     cancelled: 'Cancelled',
   })[status] ?? status.replaceAll('_', ' ');
@@ -31,6 +31,7 @@ export function DelegationWorkspace({
   setActiveTaskId,
   tasks,
   unavailable,
+  sectionId = 'mail-delegation',
 }: {
   draft: DelegationDraft | null;
   clearDraft: () => void;
@@ -38,10 +39,11 @@ export function DelegationWorkspace({
   setActiveTaskId: (id: string | null) => void;
   tasks: Task[];
   unavailable: boolean;
+  sectionId?: string;
 }) {
   return (
     <section
-      id="mail-delegation"
+      id={sectionId}
       aria-label="Delegated work"
       className="border-border mb-6 scroll-mt-4 border-b pb-5"
     >
@@ -125,9 +127,6 @@ function DelegationComposer({
   const cache = useQueryClient();
   const [instruction, setInstruction] = useState(draft.instruction);
   const [project, setProject] = useState('');
-  const [allowWrites, setAllowWrites] = useState(false);
-  const targets = useQuery(trpc.mailDelegation.projects.queryOptions());
-  const selectedProject = targets.data?.find((target) => target.id === project);
   const requestKey = useRef(crypto.randomUUID());
   const mutation = useMutation(
     trpc.mailDelegation.request.mutationOptions({
@@ -146,7 +145,6 @@ function DelegationComposer({
         if (instruction.trim())
           mutation.mutate({
             instruction: instruction.trim(),
-            allowProjectWrites: allowWrites && selectedProject?.allowWrites === true,
             projectHint: project.trim() || undefined,
             sources: draft.sources.map(({ account, messageId }) => ({ account, messageId })),
             requestKey: requestKey.current,
@@ -171,56 +169,18 @@ function DelegationComposer({
         className="border-border bg-background focus-visible:ring-ring w-full rounded-lg border p-3 text-sm focus-visible:outline-none focus-visible:ring-2"
       />
       <label className="text-muted-foreground block text-xs">
-        Repository
-        <select
+        Project or repository, if known
+        <input
           value={project}
-          disabled={mutation.isPending || targets.isLoading}
+          disabled={mutation.isPending}
           onChange={(event) => {
             setProject(event.target.value);
-            setAllowWrites(false);
             requestKey.current = crypto.randomUUID();
           }}
+          placeholder="Optional context for the agent"
           className="border-border bg-background text-foreground focus-visible:ring-ring mt-1 block w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-        >
-          <option value="">Identify the project during investigation</option>
-          {targets.data?.map((target) => (
-            <option key={target.id} value={target.id}>
-              {target.name}
-            </option>
-          ))}
-        </select>
+        />
       </label>
-      {targets.isError && (
-        <p role="status" className="text-muted-foreground text-xs">
-          Configured repositories could not be loaded.{' '}
-          <button type="button" className="underline" onClick={() => void targets.refetch()}>
-            Retry
-          </button>
-        </p>
-      )}
-      {selectedProject && (
-        <div className="space-y-2">
-          <p className="text-muted-foreground break-all text-xs">{selectedProject.repository}</p>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={allowWrites}
-              disabled={mutation.isPending || !selectedProject.allowWrites}
-              onChange={(event) => {
-                setAllowWrites(event.target.checked);
-                requestKey.current = crypto.randomUUID();
-              }}
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <span>Allow changes in this repository</span>
-          </label>
-          {!selectedProject.allowWrites && (
-            <p className="text-muted-foreground text-xs">
-              This repository is configured for read-only investigation.
-            </p>
-          )}
-        </div>
-      )}
       <details className="text-muted-foreground text-xs">
         <summary className="cursor-pointer">
           {draft.sources.length} selected {draft.sources.length === 1 ? 'message' : 'messages'} will
@@ -240,8 +200,8 @@ function DelegationComposer({
         </p>
       )}
       <p className="text-muted-foreground text-xs">
-        Your instruction defines the authorized work. Progress, questions, and reported results
-        return here.
+        Your instruction defines the work. Dot uses its connected Device for execution. Progress,
+        questions, and reported results return here.
       </p>
       <div className="flex gap-2">
         <Button
@@ -318,6 +278,7 @@ function DelegationDetail({ taskId }: { taskId: string }) {
       onSuccess: async (_result, submitted) => {
         setDraft((previous) => (previous?.requestKey === submitted.requestKey ? null : previous));
         await cache.invalidateQueries({ queryKey: trpc.mailDelegation.pathKey() });
+        toast.success('Sent to Dot. Waiting for the agent to pick it up.');
       },
       onError: (error) => toast.error(error.message),
     }),
@@ -349,30 +310,6 @@ function DelegationDetail({ taskId }: { taskId: string }) {
           Awaiting an agent claim. Delivery alone does not complete the work.
         </p>
       )}
-      <details className="text-muted-foreground text-xs">
-        <summary className="cursor-pointer">Instruction and source context</summary>
-        <ScopeDescription scope={current.authorizedScope} />
-        {current.projectHint && <p className="mt-2">Project · {current.projectHint}</p>}
-        <ul className="mt-2 space-y-1">
-          {current.sources.map((source) => (
-            <li key={JSON.stringify([source.account, source.messageId])}>
-              {source.subject} · {source.account}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-2">Context revision {current.contextRevision}</p>
-      </details>
-      {eventsQuery.hasNextPage && (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={eventsQuery.isFetchingNextPage}
-          onClick={() => void eventsQuery.fetchNextPage()}
-        >
-          <ChevronDown className="mr-1 size-3" />
-          Load earlier updates
-        </Button>
-      )}
       {eventsQuery.isError && (
         <p role="alert" className="text-sm">
           Could not load updates.{' '}
@@ -381,20 +318,53 @@ function DelegationDetail({ taskId }: { taskId: string }) {
           </button>
         </p>
       )}
-      <ol className="divide-border divide-y">
-        {events.map((event) => (
-          <li key={event.sequence} className="py-3">
-            <DelegationEventView event={event} />
-          </li>
-        ))}
-      </ol>
+      {result && (
+        <section aria-label="Agent result" className="border-border bg-muted/20 rounded-lg border p-4">
+          <h3 className="mb-2 text-sm font-semibold">Agent’s result</h3>
+          <DelegationEventView event={result} resultOnly />
+        </section>
+      )}
+      {!result && current.status === 'running' && (
+        <p className="text-muted-foreground text-sm">
+          {typeof events.findLast((event) => event.kind === 'task.progress')?.payload.summary === 'string'
+            ? String(events.findLast((event) => event.kind === 'task.progress')?.payload.summary)
+            : 'The agent is working on this.'}
+        </p>
+      )}
+      {(['reported', 'accepted', 'failed'] as string[]).includes(current.status) && (
+        <form
+          className="border-border space-y-2 border-t pt-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (reply.trim()) mutation.mutate({
+              taskId,
+              questionId: `__followup__:${current.contextRevision}`,
+              text: reply.trim(),
+              requestKey: replyKey.current,
+            });
+          }}
+        >
+          <label htmlFor="delegation-follow-up" className="block text-sm font-medium">Tell Dot what to do next</label>
+          <textarea
+            id="delegation-follow-up"
+            rows={3}
+            value={reply}
+            disabled={mutation.isPending}
+            placeholder="Ask a question or give a follow-up instruction…"
+            onChange={(event) => { setReply(event.target.value); replyKey.current = crypto.randomUUID(); }}
+            className="border-border bg-background focus-visible:ring-ring w-full rounded-lg border p-3 text-sm focus-visible:outline-none focus-visible:ring-2"
+          />
+          <p className="text-muted-foreground text-xs">Dot will receive your instruction with the original email and task history.</p>
+          <Button type="submit" size="sm" disabled={!reply.trim() || mutation.isPending}>
+            {mutation.isPending ? 'Sending…' : 'Send to Dot'}
+          </Button>
+        </form>
+      )}
       {current.status === 'reported' && result && (
         <div className="space-y-2">
-          <p className="text-muted-foreground text-sm">
-            Accept this reported result when you are satisfied with the outcome and its evidence.
-          </p>
           <Button
             size="sm"
+            variant="outline"
             disabled={accept.isPending}
             onClick={() =>
               accept.mutate({
@@ -405,8 +375,9 @@ function DelegationDetail({ taskId }: { taskId: string }) {
               })
             }
           >
-            {accept.isPending ? 'Recording acceptance…' : 'Accept result'}
+            {accept.isPending ? 'Recording…' : 'Accept result'}
           </Button>
+          <p className="text-muted-foreground text-xs">Accepting records your approval; it doesn’t ask the agent to continue.</p>
         </div>
       )}
       {current.status === 'waiting' &&
@@ -453,11 +424,36 @@ function DelegationDetail({ taskId }: { taskId: string }) {
             </Button>
           </form>
         )}
+      <details className="border-border border-t pt-3 text-sm">
+        <summary className="text-muted-foreground cursor-pointer">Source and instructions</summary>
+        <ScopeDescription scope={current.authorizedScope} />
+        {current.projectHint && <p className="mt-2">Project · {current.projectHint}</p>}
+        <ul className="mt-2 space-y-1">
+          {current.sources.map((source) => (
+            <li key={JSON.stringify([source.account, source.messageId])}>
+              {source.subject} · {source.account}
+            </li>
+          ))}
+        </ul>
+      </details>
+      <details className="border-border border-t pt-3 text-sm">
+        <summary className="text-muted-foreground cursor-pointer">Work log</summary>
+        <ol className="divide-border mt-2 divide-y">
+          {events.filter((event) => event.sequence !== result?.sequence).slice().reverse().map((event) => (
+            <li key={event.sequence} className="py-3"><DelegationEventView event={event} /></li>
+          ))}
+        </ol>
+        {eventsQuery.hasNextPage && (
+          <Button variant="ghost" size="sm" disabled={eventsQuery.isFetchingNextPage} onClick={() => void eventsQuery.fetchNextPage()}>
+            <ChevronDown className="mr-1 size-3" />Load earlier updates
+          </Button>
+        )}
+      </details>
     </div>
   );
 }
 
-function DelegationEventView({ event }: { event: Event }) {
+function DelegationEventView({ event, resultOnly = false }: { event: Event; resultOnly?: boolean }) {
   const payload = event.payload;
   const text = [payload.question, payload.summary, payload.text, payload.message].find(
     (value) => typeof value === 'string',
@@ -484,29 +480,29 @@ function DelegationEventView({ event }: { event: Event }) {
   }
   return (
     <div>
-      <p className="text-xs font-medium">
+      {!resultOnly && <p className="text-xs font-medium">
         {label[event.kind] ?? event.kind.replaceAll('.', ' ')}{' '}
         <span className="text-muted-foreground ml-2 font-normal">
           {new Date(event.createdAt).toLocaleString()}
         </span>
-      </p>
+      </p>}
       {typeof text === 'string' && (
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{text}</p>
       )}
       {evidence.size > 0 && (
-        <ul className="mt-2 space-y-2 text-sm">
+        <details className="mt-3 text-sm"><summary className="text-muted-foreground cursor-pointer">Evidence ({evidence.size})</summary><ul className="mt-2 space-y-3">
           {[...evidence].map(([key, item]) => (
             <li key={key}>
               {/^https?:\/\//i.test(item.reference) ? (
-                <a
+                <div><p className="whitespace-pre-wrap">{item.description || 'Source'}</p><a
                   href={item.reference}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 underline underline-offset-4"
                 >
-                  {item.description || item.reference}
+                  Open source
                   <ExternalLink className="size-3" />
-                </a>
+                </a></div>
               ) : (
                 <span>
                   {[item.description, item.reference]
@@ -516,10 +512,7 @@ function DelegationEventView({ event }: { event: Event }) {
               )}
             </li>
           ))}
-        </ul>
-      )}
-      {event.kind === 'task.result' && (
-        <p className="text-muted-foreground mt-2 text-xs">Evidence supplied by the agent</p>
+        </ul></details>
       )}
     </div>
   );
@@ -527,7 +520,6 @@ function DelegationEventView({ event }: { event: Event }) {
 
 function ScopeDescription({ scope }: { scope: string }) {
   let instruction = scope;
-  let projects: string[] = [];
   try {
     const parsed: unknown = JSON.parse(scope);
     if (
@@ -537,22 +529,9 @@ function ScopeDescription({ scope }: { scope: string }) {
       typeof parsed.instruction === 'string'
     ) {
       instruction = parsed.instruction;
-      if ('projectWrites' in parsed && Array.isArray(parsed.projectWrites))
-        projects = parsed.projectWrites.filter(
-          (value): value is string => typeof value === 'string',
-        );
     }
   } catch {
     /* Earlier tasks store the owner's instruction as plain text. */
   }
-  return (
-    <div className="mt-2 space-y-2">
-      <p className="whitespace-pre-wrap">{instruction}</p>
-      <p>
-        {projects.length
-          ? `Repository changes authorized for ${projects.join(', ')}`
-          : 'Read-only project investigation'}
-      </p>
-    </div>
-  );
+  return <p className="mt-2 whitespace-pre-wrap">{instruction}</p>;
 }

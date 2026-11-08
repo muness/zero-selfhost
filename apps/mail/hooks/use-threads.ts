@@ -20,6 +20,7 @@ import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';
+import { useActiveConnection } from './use-connections';
 import type { ParsedMessage } from '@/types';
 import { useParams } from 'react-router';
 import { useTheme } from 'next-themes';
@@ -39,6 +40,13 @@ export const useThreads = () => {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { labels } = useSearchLabels();
+  const { data: activeConnection } = useActiveConnection();
+  const moves = useQuery(
+    trpc.intelligentInbox.moveActivity.queryOptions(undefined, {
+      enabled: folder === 'inbox',
+      refetchInterval: 5_000,
+    }),
+  );
 
   const listInput = useMemo(
     () => ({ q: searchValue.value, folder, labelIds: labels }),
@@ -66,8 +74,13 @@ export const useThreads = () => {
       if (item.summary && !summaryStamps.has(item.summary))
         summaryStamps.set(item.summary, threadsQuery.dataUpdatedAt);
     }
-    return items.filter((e) => !isInQueue(`thread:${e.id}`));
-  }, [threadsQuery.data, threadsQuery.dataUpdatedAt, isInQueue, backgroundQueue]);
+    const moving = new Set(
+      (folder === 'inbox' ? (moves.data ?? []) : [])
+        .filter((move) => move.account.toLowerCase() === activeConnection?.email?.toLowerCase())
+        .map((move) => move.threadId),
+    );
+    return items.filter((e) => !isInQueue(`thread:${e.id}`) && !moving.has(e.id));
+  }, [threadsQuery.data, threadsQuery.dataUpdatedAt, isInQueue, backgroundQueue, moves.data, activeConnection?.email, folder]);
 
   const isEmpty = useMemo(() => threads.length === 0, [threads]);
   const isReachingEnd =

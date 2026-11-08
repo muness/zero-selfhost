@@ -34,6 +34,7 @@ import AIToggleButton from '../ai-toggle-button';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
+import { MailActionStatus } from './mail-action-status';
 
 import { cn } from '@/lib/utils';
 
@@ -236,6 +237,7 @@ export function MailLayout() {
                 </div>
               </div>
 
+              {folder === 'inbox' && <MailActionStatus account={activeConnection?.email} />}
               <div className="relative z-1 min-h-0 flex-1 overflow-hidden pt-0">
                 <MailList />
               </div>

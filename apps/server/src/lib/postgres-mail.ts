@@ -61,7 +61,9 @@ function message(row: Row): ParsedMessage {
           ...meta.labels.filter((label) => label !== 'STARRED'),
           ...(row.pending_star ? ['STARRED'] : []),
         ];
-  const tags = labels.map((id) => ({ id, name: id, type: 'system' }));
+  const tags = [...new Set(labels.map((id) => (/^\\+sent$/i.test(id) ? 'SENT' : id)))].map(
+    (id) => ({ id, name: id, type: 'system' }),
+  );
   if (row.unread) tags.push({ id: 'UNREAD', name: 'Unread', type: 'system' });
   return {
     id: row.message_id,
@@ -149,13 +151,17 @@ export async function postgresInbox(
         JOIN mail_store.message m ON (m.account, m.message_id) = (t.account, t.latest_id)
         JOIN mail0_connection c ON lower(c.email) = t.account AND c.user_id = ${userId}
         WHERE t.in_inbox
-          AND coalesce((
-            SELECT o.action NOT IN ('archive','trash','spam') OR o.last_error IS NOT NULL
-            FROM mail_store.outbox o
-            WHERE o.account=m.account AND o.message_id=m.message_id AND o.completed_at IS NULL
-              AND o.action IN ('archive','trash','spam','inbox')
-            ORDER BY o.id DESC LIMIT 1
-          ),true)
+          AND EXISTS (
+            SELECT 1 FROM mail_store.message visible
+            WHERE visible.account=t.account AND visible.thread_id=t.thread_id AND visible.in_inbox
+              AND coalesce((
+                SELECT o.action NOT IN ('archive','trash','spam')
+                FROM mail_store.outbox o
+                WHERE o.account=visible.account AND o.message_id=visible.message_id
+                  AND o.completed_at IS NULL AND o.action IN ('archive','trash','spam','inbox')
+                ORDER BY o.id DESC LIMIT 1
+              ),true)
+          )
           ${connectionId ? conn`AND c.id = ${connectionId}` : conn``}
           ${boundary ? conn`AND (t.received_at,t.account,t.thread_id) < (${boundary[0]}::timestamptz,${boundary[1]},${boundary[2]})` : conn``}
         ORDER BY t.received_at DESC,t.account DESC,t.thread_id DESC
@@ -202,6 +208,56 @@ export async function postgresInbox(
   }
 }
 
+export async function postgresSent(
+  userId: string,
+  connectionId: string,
+  limit: number,
+  cursor: string,
+) {
+  const offset = cursor ? Number(cursor) : 0;
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid Sent cursor; refresh Sent' });
+  const { conn } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const rows = await conn<(Row & { message_count: number; has_draft: boolean })[]>`
+      WITH latest_sent AS (
+        SELECT DISTINCT ON (m.thread_id)
+          m.message_id,m.thread_id,m.received_at,m.unread,m.draft,m.metadata,
+          c.id AS connection_id,t.message_count,t.has_draft
+        FROM mail0_connection c
+        JOIN mail_store.message m ON m.account=lower(c.email)
+        JOIN mail_store.thread t USING (account,thread_id)
+        WHERE c.user_id=${userId} AND c.id=${connectionId} AND NOT m.draft
+          AND m.metadata->'labels' ?| ARRAY['SENT',chr(92)||'Sent',repeat(chr(92),2)||'Sent']
+        ORDER BY m.thread_id,m.received_at DESC,m.message_id DESC
+      )
+      SELECT * FROM latest_sent ORDER BY received_at DESC,thread_id DESC
+      LIMIT ${limit + 1} OFFSET ${offset}`;
+    return {
+      threads: rows.slice(0, limit).map((row) => {
+        const latest = message(row);
+        return {
+          id: row.thread_id,
+          historyId: null,
+          connectionId: row.connection_id,
+          summary: {
+            latest,
+            labels: latest.tags,
+            hasUnread: false,
+            totalReplies: row.message_count,
+            hasDraft: row.has_draft,
+            isGroupThread:
+              latest.to.length + (latest.cc?.length ?? 0) + (latest.bcc?.length ?? 0) > 1,
+          },
+        };
+      }),
+      nextPageToken: rows.length > limit ? String(offset + limit) : null,
+    };
+  } finally {
+    await conn.end();
+  }
+}
+
 export async function postgresMailCounts(userId: string, connectionId: string) {
   const { conn } = createDb(env.HYPERDRIVE.connectionString);
   try {
@@ -210,10 +266,11 @@ export async function postgresMailCounts(userId: string, connectionId: string) {
         SELECT lower(email) AS account FROM mail0_connection
         WHERE user_id=${userId} AND id=${connectionId}
       ), labeled AS (
-        SELECT m.thread_id,m.unread,l.label
+        SELECT m.thread_id,m.unread,
+          CASE WHEN l.label IN (chr(92)||'Sent',repeat(chr(92),2)||'Sent') THEN 'SENT' ELSE l.label END AS label
         FROM mailbox b JOIN mail_store.message m USING (account)
         CROSS JOIN LATERAL jsonb_array_elements_text(m.metadata->'labels') AS l(label)
-        WHERE l.label IN ('SENT','DRAFT','SPAM','TRASH','STARRED','IMPORTANT')
+        WHERE l.label IN ('SENT','DRAFT','SPAM','TRASH','STARRED','IMPORTANT',chr(92)||'Sent',repeat(chr(92),2)||'Sent')
       )
       SELECT CASE label WHEN 'DRAFT' THEN 'drafts' WHEN 'TRASH' THEN 'bin' ELSE lower(label) END AS label,
              count(DISTINCT thread_id) FILTER (WHERE unread OR label IN ('SENT','DRAFT'))::int AS count
@@ -294,35 +351,70 @@ export async function postgresMailAction(
   try {
     // The queued IDs are derived from this user's connection, never from client-supplied
     // mailbox addresses. A single statement commits the whole requested batch.
-    const inserted = await conn<{ id: string }[]>`
+    return await conn.begin(async (tx) => {
+      // Use the same ordered per-message locks as AI and bulk actions. A fresh
+      // statement after acquiring them observes jobs enqueued by competing calls.
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtextextended(
+          ${userId} || ':' || targets.account || ':' || targets.message_id,0))
+        FROM (
+          SELECT m.account,m.message_id FROM mail0_connection c
+          JOIN mail_store.message m ON m.account=lower(c.email)
+          WHERE c.user_id=${userId} AND c.id=${connectionId}
+            AND (m.thread_id=ANY(${ids}::text[]) OR m.message_id=ANY(${ids}::text[]))
+          ORDER BY m.account,m.message_id OFFSET 0
+        ) targets`;
+      const inserted =
+        action === 'archive' || action === 'trash'
+          ? await tx<{ id: string }[]>`
+      WITH candidates AS (
+        SELECT m.account,m.message_id,m.thread_id,m.metadata
+        FROM mail0_connection c JOIN mail_store.message m ON m.account=lower(c.email)
+        WHERE c.user_id=${userId} AND c.id=${connectionId}
+          AND (${action} <> 'archive' OR m.in_inbox)
+          AND (m.thread_id=ANY(${ids}::text[]) OR m.message_id=ANY(${ids}::text[]))
+          AND NOT EXISTS (
+            SELECT 1 FROM mail_store.outbox previous
+            WHERE previous.account=m.account AND previous.message_id=m.message_id
+              AND previous.action=${action} AND previous.completed_at IS NULL
+              AND previous.id=(SELECT max(last.id) FROM mail_store.outbox last
+                WHERE last.account=m.account AND last.message_id=m.message_id
+                  AND last.completed_at IS NULL AND last.action IN ('archive','trash','spam','inbox'))
+          )
+      ), events AS (
+        INSERT INTO mail_store.ai_event (user_id,account,message_id,kind,status,summary,detail)
+        SELECT ${userId},account,message_id,${action},'queued',
+          ${action} || ' · ' || coalesce(nullif(metadata->>'subject',''),'Message'),
+          jsonb_build_object('threadId',thread_id,'subject',coalesce(metadata->>'subject',''))
+        FROM candidates RETURNING id,account,message_id
+      )
+      INSERT INTO mail_store.outbox (account,message_id,action,event_id)
+      SELECT account,message_id,${action},id FROM events RETURNING id`
+          : await tx<{ id: string }[]>`
       INSERT INTO mail_store.outbox (account,message_id,action)
       SELECT m.account,m.message_id,${action}
-      FROM mail0_connection c
-      JOIN mail_store.message m ON m.account=lower(c.email)
+      FROM mail0_connection c JOIN mail_store.message m ON m.account=lower(c.email)
       WHERE c.user_id=${userId} AND c.id=${connectionId}
-        AND (${action} <> 'archive' OR m.in_inbox)
-        AND c.access_token IS NOT NULL AND c.refresh_token IS NOT NULL
         AND (m.thread_id=ANY(${ids}::text[]) OR m.message_id=ANY(${ids}::text[]))
         AND NOT EXISTS (
           SELECT 1 FROM mail_store.outbox previous
           WHERE previous.account=m.account AND previous.message_id=m.message_id
             AND previous.action=${action} AND previous.completed_at IS NULL
-            AND previous.id = (SELECT max(last.id) FROM mail_store.outbox last
+            AND previous.id=(SELECT max(last.id) FROM mail_store.outbox last
               WHERE last.account=m.account AND last.message_id=m.message_id
                 AND last.completed_at IS NULL)
-        )
-      RETURNING id
-    `;
-    if (inserted.length > 0) return true;
-    // An identical job may already be in flight. Do not fall back to another backend.
-    const [found] = await conn<{ found: boolean }[]>`
+        ) RETURNING id`;
+      if (inserted.length > 0) return true;
+      // An identical job may already be in flight. Do not fall back to another backend.
+      const [found] = await tx<{ found: boolean }[]>`
       SELECT EXISTS (
         SELECT 1 FROM mail0_connection c JOIN mail_store.message m ON m.account=lower(c.email)
         WHERE c.user_id=${userId} AND c.id=${connectionId}
           AND (m.thread_id=ANY(${ids}::text[]) OR m.message_id=ANY(${ids}::text[]))
       ) AS found
     `;
-    return Boolean(found?.found);
+      return Boolean(found?.found);
+    });
   } finally {
     await conn.end();
   }
