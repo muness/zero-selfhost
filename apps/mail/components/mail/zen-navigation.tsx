@@ -11,6 +11,7 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 import { navigationConfig } from '@/config/navigation';
 import { ChevronDown, SquarePen } from 'lucide-react';
 import { useMail } from '@/components/mail/use-mail';
+import { MOVE_TO_BIN_KEY } from '@/config/shortcuts';
 import { NavUser } from '@/components/ui/nav-user';
 import { Button } from '@/components/ui/button';
 import { m } from '@/paraglide/messages';
@@ -52,7 +53,11 @@ export function ZenBulkActions() {
     {
       label: m['common.mail.moveToBin'](),
       icon: Trash,
-      run: () => optimisticDeleteThreads(mail.bulkSelected, folder),
+      shortcut: folder === 'bin' ? undefined : MOVE_TO_BIN_KEY.toUpperCase(),
+      run: () =>
+        folder === 'bin'
+          ? optimisticDeleteThreads(mail.bulkSelected, folder)
+          : optimisticMoveThreadsTo(mail.bulkSelected, folder, 'bin'),
     },
   ];
 
@@ -69,6 +74,7 @@ export function ZenBulkActions() {
               size="icon"
               className="bg-muted h-7 w-7 rounded-lg"
               aria-label={action.label}
+              aria-keyshortcuts={action.shortcut}
               onClick={() => {
                 action.run();
                 setMail((previous) => ({ ...previous, bulkSelected: [] }));
@@ -77,7 +83,14 @@ export function ZenBulkActions() {
               <action.icon className="fill-muted-foreground h-4 w-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>{action.label}</TooltipContent>
+          <TooltipContent>
+            <span className="inline-flex items-center gap-2">
+              {action.label}
+              {action.shortcut && (
+                <kbd className="rounded border border-current px-1 text-xs">{action.shortcut}</kbd>
+              )}
+            </span>
+          </TooltipContent>
         </Tooltip>
       ))}
     </div>

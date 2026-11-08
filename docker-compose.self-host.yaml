@@ -1,0 +1,56 @@
+services:
+  zero:
+    image: ${ZERO_IMAGE:?Set the locally built image tag}
+    environment:
+      ZERO_ORIGIN: ${ZERO_ORIGIN:?Set the private HTTPS URL}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?Set a URI-safe PostgreSQL password}@postgres:5432/zero
+      REDIS_URL: redis://valkey:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - zero-state:/state
+    networks: [data, edge]
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: zero
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, zero]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [data]
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: [valkey-server, --appendonly, 'yes']
+    volumes:
+      - valkey-data:/data
+    networks: [data]
+    restart: unless-stopped
+
+  ingress:
+    image: caddy:2-alpine
+    volumes:
+      - ./docker/self-host/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - '127.0.0.1:8300:8300'
+    networks: [edge]
+    restart: unless-stopped
+
+networks:
+  data:
+    internal: true
+  edge:
+
+volumes:
+  zero-state:
+  postgres-data:
+  valkey-data:

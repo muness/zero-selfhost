@@ -54,7 +54,6 @@ import type { HonoContext } from './ctx';
 import { createDb, type DB } from './db';
 import { createAuth } from './lib/auth';
 import { aiRouter } from './routes/ai';
-import { Autumn } from 'autumn-js';
 import { appRouter } from './trpc';
 import { cors } from 'hono/cors';
 import { Hono } from 'hono';
@@ -700,9 +699,6 @@ const api = new Hono<HonoContext>()
       }
     }
 
-    const autumn = new Autumn({ secretKey: env.AUTUMN_SECRET_KEY });
-    c.set('autumn', autumn);
-
     await next();
 
     c.set('sessionUser', undefined);
@@ -958,10 +954,13 @@ export default class Entry extends WorkerEntrypoint<ZeroEnv> {
   async scheduled() {
     console.log('[SCHEDULED] Checking for expired subscriptions...');
     const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
-    const allAccounts = await db.query.connection.findMany({
-      where: (fields, { isNotNull, and }) =>
-        and(isNotNull(fields.accessToken), isNotNull(fields.refreshToken)),
-    });
+    const allAccounts =
+      this.env.POSTGRES_MAIL_STORE === 'true'
+        ? []
+        : await db.query.connection.findMany({
+            where: (fields, { isNotNull, and }) =>
+              and(isNotNull(fields.accessToken), isNotNull(fields.refreshToken)),
+          });
     await conn.end();
     console.log('[SCHEDULED] allAccounts', allAccounts.length);
     // Bound startup fan-out. Each mailbox preserves its own polling/backoff

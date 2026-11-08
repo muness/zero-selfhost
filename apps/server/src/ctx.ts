@@ -1,4 +1,3 @@
-import type { Autumn } from 'autumn-js';
 import type { Auth } from './lib/auth';
 import type { ZeroEnv } from './env';
 
@@ -8,7 +7,6 @@ export type HonoVariables = {
   auth: Auth;
   authRecoveryURL?: string;
   sessionUser?: SessionUser;
-  autumn: Autumn;
 };
 
 export type HonoContext = { Variables: HonoVariables; Bindings: ZeroEnv };

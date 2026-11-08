@@ -1,5 +1,6 @@
 import { mailNavigationCommandAtom } from '@/hooks/use-mail-navigation';
 import { enhancedKeyboardShortcuts } from '@/config/shortcuts';
+import { useActiveConnection } from '@/hooks/use-connections';
 import useMoveTo from '@/hooks/driver/use-move-to';
 import useDelete from '@/hooks/driver/use-delete';
 import { useShortcuts } from './use-hotkey-utils';
@@ -18,6 +19,7 @@ export function ThreadDisplayHotkeys() {
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [openThreadId] = useQueryState('threadId');
   const { data: thread } = useThread(openThreadId);
+  const { data: connection } = useActiveConnection();
   const params = useParams<{
     folder: string;
   }>();
@@ -39,6 +41,15 @@ export function ThreadDisplayHotkeys() {
       setMode('replyAll');
       setActiveReplyId(thread?.latest?.id ?? '');
     },
+    moveToBin: () => {
+      if (!openThreadId || !thread || !connection?.id || params.folder === 'bin') return;
+      moveTo({
+        threadIds: [openThreadId],
+        currentFolder: params.folder ?? 'inbox',
+        destination: 'bin',
+        connectionId: connection.id,
+      });
+    },
     delete: () => {
       if (!openThreadId) return;
       if (params.folder === 'bin') {
@@ -56,7 +67,7 @@ export function ThreadDisplayHotkeys() {
   };
 
   const threadDisplayShortcuts = enhancedKeyboardShortcuts.filter(
-    (shortcut) => shortcut.scope === scope,
+    (shortcut) => shortcut.scope === scope && shortcut.action in handlers,
   );
 
   useShortcuts(threadDisplayShortcuts, handlers, { scope });

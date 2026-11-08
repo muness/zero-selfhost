@@ -728,6 +728,7 @@ export class ZeroDriver extends Agent<ZeroEnv> {
   }
 
   async runMailboxHistory() {
+    if (this.env.POSTGRES_MAIL_STORE === 'true') return;
     return withGmailPriority('sync', () =>
       this.withMailboxWork(async () => {
         const store = this.historyStore;
@@ -1533,6 +1534,7 @@ export class ZeroDriver extends Agent<ZeroEnv> {
       } finally {
         this.ctx.waitUntil(conn.end());
       }
+      if (this.env.POSTGRES_MAIL_STORE === 'true') return;
       if (this.driver?.syncMailbox) {
         await this.ensureImapSync();
       } else if (this.driver?.getMailboxHistoryId) {
@@ -1603,6 +1605,7 @@ export class ZeroDriver extends Agent<ZeroEnv> {
 
   /** One bounded IMAP sync pass, then re-imports the threads it changed. */
   async runImapSync() {
+    if (this.env.POSTGRES_MAIL_STORE === 'true') return;
     if (this.name === 'general' || this.name.includes('aggregate')) return;
     if (this.imapSyncInFlight) {
       this.imapSyncRequested = true;

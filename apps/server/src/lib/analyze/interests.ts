@@ -14,8 +14,7 @@
  * Reuse or distribution of this file requires a license from Zero Email Inc.
  */
 
-import { env } from 'cloudflare:workers';
-import { miniModel } from '../ai-models';
+import { aiAvailable, miniModel } from '../ai-models';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 
@@ -41,8 +40,8 @@ export async function generateWhatUserCaresAbout(
     return [];
   }
 
-  if (!env.OPENROUTER_API_KEY) {
-    console.warn('OPENROUTER_API_KEY not configured - topics generation disabled');
+  if (!aiAvailable()) {
+    console.warn('AI endpoint not configured - topics generation disabled');
     return [];
   }
 

@@ -48,6 +48,12 @@ export type ZeroEnv = {
   BETTER_AUTH_URL: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  GOA_MAIL_URL?: string;
+  GOA_MAIL_KEY?: string;
+  POSTGRES_MAIL_STORE?: string;
+  SELF_HOSTED?: 'true' | 'false';
+  TAILNET_OWNER_EMAIL?: string;
+  TAILNET_INGRESS_KEY?: string;
   RESEND_API_KEY: string;
   VITE_PUBLIC_POSTHOG_KEY: string;
   VITE_PUBLIC_POSTHOG_HOST: string;
@@ -77,8 +83,14 @@ export type ZeroEnv = {
   REACT_SCAN: string;
   MICROSOFT_CLIENT_ID: string;
   MICROSOFT_CLIENT_SECRET: string;
+  MICROSOFT_TENANT_ID?: string;
+  MICROSOFT_IMPORTED_CLIENTS?: string;
   VOICE_SECRET: string;
   ARCADE_API_KEY: string;
+  MAIL_AI_BASE_URL?: string;
+  MAIL_AI_API_KEY?: string;
+  MAIL_AI_MODEL?: string;
+  MAIL_AI_MINI_MODEL?: string;
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL?: string;
   OPENROUTER_MINI_MODEL?: string;

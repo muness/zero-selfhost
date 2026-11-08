@@ -1,15 +1,23 @@
 import {
+  postgresInbox,
+  postgresMailAction,
+  postgresMailCounts,
+  postgresMessageAttachments,
+  postgresThread,
+} from '../../lib/postgres-mail';
+import {
   IGetThreadResponseSchema,
   IGetThreadsResponseSchema,
   type IGetThreadsResponse,
 } from '../../lib/driver/types';
+import { connectionToDriver, getZeroAgent, getZeroDB } from '../../lib/server-utils';
 import { updateWritingStyleMatrix } from '../../services/writing-style-service';
 import { activeDriverProcedure, router, privateProcedure } from '../trpc';
 import { pickForwardedAttachments } from '../../lib/forward-attachments';
 import { getGmailQuotaGovernor } from '../../lib/gmail-quota-client';
 import { withThreadListSummaries } from '../../lib/thread-list-page';
 import { isConnectionActive } from '../../lib/connection-status';
-import { getZeroAgent, getZeroDB } from '../../lib/server-utils';
+import { OutlookMailManager } from '../../lib/driver/microsoft';
 import { processEmailHtml } from '../../lib/email-processor';
 import { withServerTiming } from '../../lib/server-timing';
 import { defaultPageSize, FOLDERS } from '../../lib/utils';
@@ -80,6 +88,12 @@ export const mailRouter = router({
     .output(IGetThreadResponseSchema)
     .query(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const stored = await withServerTiming(ctx.c, 'thread_postgres', () =>
+          postgresThread(ctx.sessionUser.id, activeConnection.id, input.id),
+        );
+        if (stored) return stored;
+      }
       const agent = await getZeroAgent(activeConnection.id, {
         initializeAuth: !isConnectionActive(activeConnection),
       });
@@ -96,6 +110,10 @@ export const mailRouter = router({
     )
     .query(async ({ ctx }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true')
+        return withServerTiming(ctx.c, 'counts_postgres', () =>
+          postgresMailCounts(ctx.sessionUser.id, activeConnection.id),
+        );
       const agent = await getZeroAgent(activeConnection.id);
       return await agent.count();
     }),
@@ -113,6 +131,15 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { folder, maxResults, cursor, q, labelIds } = input;
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true' && folder === FOLDERS.INBOX && !q && !labelIds.length)
+        return withServerTiming(ctx.c, 'inbox_postgres', () =>
+          postgresInbox(
+            ctx.sessionUser.id,
+            Math.min(100, Math.max(1, Math.floor(maxResults))),
+            cursor,
+            activeConnection.id,
+          ),
+        );
       const agent = await getZeroAgent(activeConnection.id, {
         initializeAuth:
           !!q ||
@@ -255,19 +282,38 @@ export const mailRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { maxResults, cursor } = input;
+      if (env.POSTGRES_MAIL_STORE === 'true')
+        return withServerTiming(ctx.c, 'unified_postgres', () =>
+          postgresInbox(ctx.sessionUser.id, maxResults, cursor),
+        );
       const db = await getZeroDB(ctx.sessionUser.id);
-      const allConnections = await db.findManyConnections();
+      const allConnections = await withServerTiming(ctx.c, 'unified_connections', () =>
+        db.findManyConnections(),
+      );
       const connections = allConnections.filter(isConnectionActive);
 
       const fallbackKey = cursor || new Date().toISOString();
       const results = await Promise.allSettled(
-        connections.map(async (connection) => {
-          const agent = await getZeroAgent(connection.id, { initializeAuth: false });
-          const page = await agent.listThreadsWithSummaries({
-            folder: FOLDERS.INBOX,
-            maxResults,
-            pageToken: cursor,
-          });
+        connections.map(async (connection, index) => {
+          const readInbox = async () => {
+            if (connection.providerId === 'microsoft') {
+              const driver = connectionToDriver(connection);
+              if (driver instanceof OutlookMailManager)
+                return driver.listUnifiedInbox(maxResults, cursor);
+            }
+            // setMetaData restores provider auth and starts polling in the background.
+            const agent = await getZeroAgent(connection.id, { initializeAuth: false });
+            return agent.listThreadsWithSummaries({
+              folder: FOLDERS.INBOX,
+              maxResults,
+              pageToken: cursor,
+            });
+          };
+          const page = await withServerTiming(
+            ctx.c,
+            `unified_${connection.providerId}_${index}`,
+            readInbox,
+          );
           // Threads arrive sorted newest-first; a thread without a summary inherits its
           // predecessor's timestamp so it keeps its place in the merged order.
           let previousKey = fallbackKey;
@@ -328,6 +374,11 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        (await postgresMailAction(ctx.sessionUser.id, activeConnection.id, input.ids, 'read'))
+      )
+        return { success: true };
       const agent = await getZeroAgent(activeConnection.id);
       return agent.markAsRead(input.ids);
     }),
@@ -339,6 +390,11 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        (await postgresMailAction(ctx.sessionUser.id, activeConnection.id, input.ids, 'unread'))
+      )
+        return { success: true };
       const agent = await getZeroAgent(activeConnection.id);
       return agent.markAsUnread(input.ids);
     }),
@@ -359,27 +415,50 @@ export const mailRouter = router({
         threadId: z.string().array(),
         addLabels: z.string().array().optional().default([]),
         removeLabels: z.string().array().optional().default([]),
+        connectionId: z.string().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { activeConnection } = ctx;
-      const agent = await getZeroAgent(activeConnection.id);
+      const target = input.connectionId
+        ? await (await getZeroDB(ctx.sessionUser.id)).findUserConnection(input.connectionId)
+        : ctx.activeConnection;
+      if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
       const { threadId, addLabels, removeLabels } = input;
-
-      console.log(`Server: updateThreadLabels called for thread ${threadId}`);
-      console.log(`Adding labels: ${addLabels.join(', ')}`);
-      console.log(`Removing labels: ${removeLabels.join(', ')}`);
-
-      const result = await agent.normalizeIds(threadId);
-      const { threadIds } = result;
-
-      if (threadIds.length) {
-        await agent.modifyLabels(threadIds, addLabels, removeLabels);
-        return { success: true };
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const add = addLabels[0];
+        const action =
+          add === 'TRASH'
+            ? 'trash'
+            : add === 'SPAM'
+              ? 'spam'
+              : add === 'INBOX'
+                ? 'inbox'
+                : !add && removeLabels.includes('INBOX')
+                  ? 'archive'
+                  : null;
+        if (action && (await postgresMailAction(ctx.sessionUser.id, target.id, threadId, action)))
+          return { success: true };
       }
 
-      console.log('Server: No label changes specified');
-      return { success: false, error: 'No label changes specified' };
+      try {
+        const agent = await getZeroAgent(target.id);
+        const { threadIds } = await agent.normalizeIds(threadId);
+        if (threadIds.length) {
+          await agent.modifyLabels(threadIds, addLabels, removeLabels);
+          return { success: true };
+        }
+        return { success: false, error: 'No label changes specified' };
+      } catch (cause) {
+        // The active-driver middleware may mark the default connection disconnected.
+        // Errors from an explicitly targeted different mailbox must never do that.
+        if (target.id !== ctx.activeConnection.id)
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Could not update the selected mailbox',
+            cause,
+          });
+        throw cause;
+      }
     }),
 
   toggleStar: activeDriverProcedure
@@ -387,18 +466,40 @@ export const mailRouter = router({
       z.object({
         ids: z.string().array(),
         starred: z.boolean().optional(),
+        connectionId: z.string().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { activeConnection } = ctx;
-      const agent = await getZeroAgent(activeConnection.id);
-      const { threadIds } = await agent.normalizeIds(input.ids);
+      const target = input.connectionId
+        ? await (await getZeroDB(ctx.sessionUser.id)).findUserConnection(input.connectionId)
+        : ctx.activeConnection;
+      if (!target || !isConnectionActive(target)) throw new TRPCError({ code: 'NOT_FOUND' });
+      if (
+        env.POSTGRES_MAIL_STORE === 'true' &&
+        input.starred !== undefined &&
+        (await postgresMailAction(
+          ctx.sessionUser.id,
+          target.id,
+          input.ids,
+          input.starred ? 'star' : 'unstar',
+        ))
+      )
+        return { success: true };
 
-      if (!threadIds.length) {
-        return { success: false, error: 'No thread IDs provided' };
+      try {
+        const agent = await getZeroAgent(target.id);
+        const { threadIds } = await agent.normalizeIds(input.ids);
+        if (!threadIds.length) return { success: false, error: 'No thread IDs provided' };
+        return await agent.setThreadsStarred(threadIds, input.starred);
+      } catch (cause) {
+        if (target.id !== ctx.activeConnection.id)
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Could not update the selected mailbox',
+            cause,
+          });
+        throw cause;
       }
-
-      return agent.setThreadsStarred(threadIds, input.starred);
     }),
   toggleImportant: activeDriverProcedure
     .input(
@@ -656,6 +757,12 @@ export const mailRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { activeConnection } = ctx;
+      if (env.POSTGRES_MAIL_STORE === 'true') {
+        const stored = await withServerTiming(ctx.c, 'attachments_postgres', () =>
+          postgresMessageAttachments(ctx.sessionUser.id, activeConnection.id, input.messageId),
+        );
+        if (stored !== null) return stored;
+      }
       const agent = await getZeroAgent(activeConnection.id);
       return agent.getMessageAttachments(input.messageId) as Promise<
         {

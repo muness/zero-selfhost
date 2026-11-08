@@ -160,13 +160,13 @@ export function MailContent({ id, html, senderEmail, threadId }: MailContentProp
     shadowRootRef.current.addEventListener('error', handleImageError, true);
 
     const handleClick = (e: Event) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'A') {
+      const target = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (target) {
         e.preventDefault();
         const href = target.getAttribute('href');
-        if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+        if (href && /^https?:\/\//i.test(href)) {
           window.open(href, '_blank', 'noopener,noreferrer');
-        } else if (href && href.startsWith('mailto:')) {
+        } else if (href && /^mailto:/i.test(href)) {
           window.location.href = href;
         }
       }

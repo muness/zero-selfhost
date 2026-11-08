@@ -14,6 +14,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { clearMailboxChatData } from './chat-attachments';
 import { getSocialProviders } from './auth-providers';
 import { getAuthRecoveryURL } from './auth-recovery';
+import { tailnetSession } from './tailnet-session';
 import { redis, resend, twilio } from './services';
 import { getContext } from 'hono/context-storage';
 import type { CreateEmailOptions } from 'resend';
@@ -132,7 +133,7 @@ const connectionHandlerHook = async (account: Account) => {
     accessToken: account.accessToken,
     refreshToken: account.refreshToken,
     scope: driver.getScope(),
-    expiresAt: new Date(Date.now() + (account.accessTokenExpiresAt?.getTime() || 3600000)),
+    expiresAt: account.accessTokenExpiresAt ?? new Date(Date.now() + 3600000),
   };
 
   const db = await getZeroDB(account.userId);
@@ -160,11 +161,15 @@ const connectionHandlerHook = async (account: Account) => {
 };
 
 export const createAuth = () => {
-  const twilioClient = twilio();
   const dub = new Dub();
+  const owner = env.TAILNET_OWNER_EMAIL;
+  const ingressKey = env.TAILNET_INGRESS_KEY;
+  const privateLogin = env.SELF_HOSTED === 'true' && owner && ingressKey;
 
   return betterAuth({
+    ...(privateLogin ? { disabledPaths: ['/sign-in/social'] } : {}),
     plugins: [
+      ...(privateLogin ? [tailnetSession(owner, ingressKey)] : []),
       dubAnalytics({
         dubClient: dub,
       }),
@@ -175,8 +180,11 @@ export const createAuth = () => {
       bearer(),
       phoneNumber({
         sendOTP: async ({ code, phoneNumber }) => {
-          await twilioClient.messages
-            .send(phoneNumber, `Your verification code is: ${code}, do not share it with anyone.`)
+          await twilio()
+            .messages.send(
+              phoneNumber,
+              `Your verification code is: ${code}, do not share it with anyone.`,
+            )
             .catch((error) => {
               console.error('Failed to send OTP', error);
               throw new APIError('INTERNAL_SERVER_ERROR', {
@@ -207,23 +215,6 @@ export const createAuth = () => {
           if (!request) throw new APIError('BAD_REQUEST', { message: 'Request object is missing' });
           const db = await getZeroDB(user.id);
           const connections = await db.findManyConnections();
-          const context = getContext<HonoContext>();
-          const customer = await context.var.autumn.customers.get(user.id);
-          if (customer.data) {
-            try {
-              await Promise.all(
-                customer.data.products.map(async (product) =>
-                  context.var.autumn.cancel({
-                    customer_id: user.id,
-                    product_id: product.id,
-                  }),
-                ),
-              );
-            } catch (error) {
-              console.error('Failed to delete Autumn customer:', error);
-            }
-          }
-
           const revokedAccounts = (
             await Promise.allSettled(
               connections.map(async (connection) => {

@@ -33,7 +33,6 @@ import { connection } from './db/schema';
 import type { EPrompts } from './types';
 import { EProviders } from './types';
 import type { ZeroEnv } from './env';
-import { Autumn } from 'autumn-js';
 import { eq } from 'drizzle-orm';
 import { createDb } from './db';
 
@@ -127,8 +126,7 @@ export class WorkflowRunner extends DurableObject<ZeroEnv> {
 
   /** Local dev (`NODE_ENV=local`) treats every user as paid. */
   private billing(): BrainBilling {
-    if (this.env.NODE_ENV === 'local') return localDevBilling;
-    return new Autumn({ secretKey: this.env.AUTUMN_SECRET_KEY });
+    return localDevBilling;
   }
 
   /** The connection's owner and their AI settings. */

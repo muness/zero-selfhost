@@ -1,0 +1,16 @@
+:8300 {
+	@devInternal path /cdn-cgi/* /__scheduled
+	respond @devInternal 404
+	@backend path /api/* /trpc/* /health /a8n/*
+	handle @backend {
+		reverse_proxy https://zero:8787 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+			header_up X-Forwarded-Proto https
+		}
+	}
+	handle {
+		reverse_proxy zero:3000
+	}
+}

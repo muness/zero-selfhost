@@ -1,6 +1,7 @@
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { enhancedKeyboardShortcuts } from '@/config/shortcuts';
+import { useActiveConnection } from '@/hooks/use-connections';
 import { useMailCategories } from '@/components/mail/mail';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useLocation, useParams } from 'react-router';
@@ -23,6 +24,7 @@ export function MailListHotkeys() {
   const pathname = useLocation().pathname;
   const params = useParams<{ folder: string }>();
   const folder = params?.folder ?? 'inbox';
+  const { data: connection } = useActiveConnection();
   const shouldUseHover = mail.bulkSelected.length === 0;
 
   const {
@@ -30,7 +32,6 @@ export function MailListHotkeys() {
     optimisticMarkAsUnread,
     optimisticMoveThreadsTo,
     optimisticToggleImportant,
-    optimisticDeleteThreads,
     optimisticToggleStar,
   } = useOptimisticActions();
 
@@ -137,20 +138,20 @@ export function MailListHotkeys() {
     optimisticMoveThreadsTo(idsToArchive, folder, 'archive');
   }, [mail.bulkSelected, folder, optimisticMoveThreadsTo, shouldUseHover]);
 
-  const bulkDelete = useCallback(() => {
-    if (shouldUseHover && hoveredEmailId.current) {
-      optimisticDeleteThreads([hoveredEmailId.current], folder);
-      return;
-    }
-
-    const idsToDelete = mail.bulkSelected;
-    if (idsToDelete.length === 0) {
-      toast.info(m['common.mail.noEmailsToSelect']());
-      return;
-    }
-
-    optimisticDeleteThreads(idsToDelete, folder);
-  }, [mail.bulkSelected, folder, optimisticDeleteThreads, shouldUseHover]);
+  const connectionId = connection?.id;
+  const moveToBin = useCallback(() => {
+    if (!connectionId || folder === 'bin' || pathname.startsWith('/mail/unified')) return;
+    const ids =
+      shouldUseHover && hoveredEmailId.current ? [hoveredEmailId.current] : mail.bulkSelected;
+    optimisticMoveThreadsTo(ids, folder, 'bin', connectionId);
+  }, [
+    connectionId,
+    folder,
+    pathname,
+    shouldUseHover,
+    mail.bulkSelected,
+    optimisticMoveThreadsTo,
+  ]);
 
   const bulkStar = useCallback(() => {
     if (shouldUseHover && hoveredEmailId.current) {
@@ -215,7 +216,7 @@ export function MailListHotkeys() {
       selectAll,
       archiveEmail,
       bulkArchive,
-      bulkDelete,
+      moveToBin,
       bulkStar,
       exitSelectionMode,
       showImportant: () => switchCategoryByIndex(0),
@@ -233,14 +234,14 @@ export function MailListHotkeys() {
       selectAll,
       archiveEmail,
       bulkArchive,
-      bulkDelete,
+      moveToBin,
       bulkStar,
       exitSelectionMode,
     ],
   );
 
   const mailListShortcuts = enhancedKeyboardShortcuts.filter(
-    (shortcut) => shortcut.scope === scope,
+    (shortcut) => shortcut.scope === scope && !pathname.startsWith('/mail/unified'),
   );
 
   useShortcuts(mailListShortcuts, handlers, { scope });

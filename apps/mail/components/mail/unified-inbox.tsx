@@ -1,12 +1,14 @@
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { IntelligentInbox, type IntelligenceView, type OpenableMail } from './intelligent-inbox';
+import { actionsByThreadAtom, useOptimisticThreadState } from './optimistic-thread-state';
+import { isHotkeyPressed, useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ZenComposeButton, ZenFolderSelect, ZenNavigation } from './zen-navigation';
 import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExclamationCircle, GroupPeople, PencilCompose } from '../icons/icons';
+import { ARCHIVE_KEY, MOVE_TO_BIN_KEY, STAR_KEY } from '@/config/shortcuts';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { useOptimisticThreadState } from './optimistic-thread-state';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useLoading } from '@/components/context/loading-context';
 import { ThreadDisplay } from '@/components/mail/thread-display';
 import { PricingDialog } from '@/components/ui/pricing-dialog';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -14,7 +16,6 @@ import { useUnifiedInbox } from '@/hooks/use-unified-inbox';
 import AIToggleButton from '@/components/ai-toggle-button';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import { useHotkeysContext } from 'react-hotkeys-hook';
 import { useAiEnabled } from '@/hooks/use-ai-enabled';
 import { useTRPC } from '@/providers/query-provider';
 import AISidebar from '@/components/ui/ai-sidebar';
@@ -28,6 +29,8 @@ import { BimiAvatar } from '../ui/bimi-avatar';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
+import { Star } from 'lucide-react';
+import { useStore } from 'jotai';
 import { toast } from 'sonner';
 
 /** Distinguishes accounts at a glance; assigned by each account's position in the list. */
@@ -43,10 +46,22 @@ const ACCOUNT_COLORS = [
 ];
 
 const LOAD_MORE_THRESHOLD = 10;
+const rowKey = (thread: { connectionId: string; id: string }) =>
+  JSON.stringify([thread.connectionId, thread.id]);
 
 type UnifiedThread = ReturnType<typeof useUnifiedInbox>['threads'][number];
 type UnifiedConnection = ReturnType<typeof useUnifiedInbox>['connections'][number];
 type AccountInfo = UnifiedConnection & { color: string };
+
+function threadsByConnection(items: UnifiedThread[]) {
+  const byConnection = new Map<string, string[]>();
+  for (const thread of items) {
+    const ids = byConnection.get(thread.connectionId) ?? [];
+    ids.push(thread.id);
+    byConnection.set(thread.connectionId, ids);
+  }
+  return byConnection;
+}
 
 export function UnifiedInboxLayout() {
   const isMobile = useIsMobile();
@@ -80,7 +95,7 @@ export function UnifiedInboxLayout() {
   return (
     <TooltipProvider delayDuration={0}>
       <PricingDialog />
-      <div className="rounded-inherit relative z-5 flex p-0 md:mr-0.5">
+      <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5">
         <ResizablePanelGroup
           direction="horizontal"
           className={cn('rounded-inherit relative overflow-hidden', threadId && 'bg-sidebar')}
@@ -127,11 +142,13 @@ export function UnifiedInboxLayout() {
 function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { setLoading } = useLoading();
   const { data: activeConnection } = useActiveConnection();
   const { data: settingsData } = useSettings();
-  const { optimisticMarkAsRead } = useOptimisticActions();
+  const { optimisticMarkAsRead, optimisticMoveThreadsTo, optimisticToggleStar } =
+    useOptimisticActions();
+  const store = useStore();
   const [threadId, setThreadId] = useQueryState('threadId');
+  const [inboxView, setInboxView] = useQueryState('view', { defaultValue: 'inbox' });
   const [, setDraftId] = useQueryState('draftId');
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -141,6 +158,12 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
   const { query, threads, connections, failedConnectionIds, loadMore } = useUnifiedInbox();
   const vListRef = useRef<VListHandle>(null);
   const isSwitchingRef = useRef(false);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [isCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
+  const [isComposeOpen] = useQueryState('isComposeOpen');
+  const keyboardEnabled =
+    !threadId && !isCommandPaletteOpen && !isComposeOpen && inboxView === 'all-inbox';
 
   const accounts = useMemo(() => {
     const map = new Map<string, AccountInfo>();
@@ -164,29 +187,38 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
    * account switcher, the unified list itself is kept: it already covers every account.
    */
   const openThread = useCallback(
-    async (thread: UnifiedThread) => {
+    async (thread: OpenableMail) => {
       if (isSwitchingRef.current) return;
       const autoRead = settingsData?.settings?.autoRead ?? true;
-      const needsSwitch = !!activeConnection?.id && thread.connectionId !== activeConnection.id;
+      const needsSwitch = thread.connectionId !== activeConnection?.id;
 
       if (needsSwitch) {
         isSwitchingRef.current = true;
         try {
-          setLoading(true, m['common.navUser.switchingAccounts']());
-          setThreadId(null);
-          await setDefaultConnection({ connectionId: thread.connectionId });
-          const unifiedKey = JSON.stringify(trpc.mail.listUnifiedInbox.pathKey()[0]);
-          const notUnified = (q: { queryKey: readonly unknown[] }) =>
-            JSON.stringify(q.queryKey[0]) !== unifiedKey;
-          await queryClient.cancelQueries({ predicate: notUnified });
-          await queryClient.resetQueries({ predicate: notUnified });
+          const defaultKey = trpc.connections.getDefault.queryKey();
+          const accountData = {
+            predicate: ({ queryKey }: { queryKey: readonly unknown[] }) => {
+              const path = queryKey[0];
+              if (!Array.isArray(path)) return false;
+              if (path[0] === 'mail') return path[1] !== 'listUnifiedInbox';
+              return ['drafts', 'labels', 'search'].includes(path[0]);
+            },
+          };
+          await Promise.all([
+            queryClient.cancelQueries({ queryKey: defaultKey, exact: true }),
+            queryClient.cancelQueries(accountData),
+          ]);
+          const account = await setDefaultConnection({ connectionId: thread.connectionId });
+          queryClient.setQueryData(defaultKey, account);
+          // Clear previous-account data immediately; network refetches can finish in parallel
+          // with the newly opened thread.
+          void queryClient.resetQueries(accountData);
         } catch (error) {
           console.error('[UnifiedInbox] Failed to switch account', error);
           toast.error(m['common.navUser.failedToSwitchAccount']());
           return;
         } finally {
           isSwitchingRef.current = false;
-          setLoading(false);
         }
       }
 
@@ -199,7 +231,6 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     [
       activeConnection?.id,
       settingsData,
-      setLoading,
       setThreadId,
       setDefaultConnection,
       trpc,
@@ -224,11 +255,130 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
     return () => cancelAnimationFrame(frame);
   }, [maybeLoadMore]);
 
+  const focusedIndex =
+    focusedKey === null ? -1 : threads.findIndex((thread) => rowKey(thread) === focusedKey);
+  const selectedThreads = threads.filter((thread) => selectedKeys.has(rowKey(thread)));
+  const toggleSelected = useCallback((thread: UnifiedThread) => {
+    const key = rowKey(thread);
+    setFocusedKey(key);
+    setSelectedKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const starThreads = (items: UnifiedThread[]) => {
+    const actions = store.get(actionsByThreadAtom);
+    const starred = !items.every(({ id, summary }) => {
+      const pending = actions.get(id)?.findLast((action) => action.type === 'STAR');
+      return pending?.type === 'STAR'
+        ? pending.starred
+        : summary?.latest?.tags?.some((tag) => tag.name === 'STARRED');
+    });
+    for (const [connection, ids] of threadsByConnection(items))
+      optimisticToggleStar(ids, starred, connection);
+  };
+
+  const moveThreads = (items: UnifiedThread[], destination: 'bin' | 'archive') => {
+    for (const [connection, ids] of threadsByConnection(items))
+      optimisticMoveThreadsTo(ids, 'inbox', destination, connection);
+    setSelectedKeys(new Set());
+    // Keep the cursor near the next available message.
+    const removed = new Set(items.map(rowKey));
+    const next =
+      threads.slice(Math.max(0, focusedIndex)).find((thread) => !removed.has(rowKey(thread))) ??
+      threads.findLast((thread) => !removed.has(rowKey(thread)));
+    setFocusedKey(next ? rowKey(next) : null);
+  };
+  const moveFocus = (delta: number) => {
+    if (!threads.length) return;
+    const index =
+      focusedIndex < 0
+        ? delta < 0
+          ? threads.length - 1
+          : 0
+        : Math.min(threads.length - 1, Math.max(0, focusedIndex + delta));
+    setFocusedKey(rowKey(threads[index]));
+    vListRef.current?.scrollToIndex(index, { align: 'nearest' });
+  };
+  const handleListKey = (event: KeyboardEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      isHotkeyPressed('g')
+    )
+      return;
+    if (
+      event.key === 'ArrowDown' ||
+      event.key === 'j' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'k'
+    ) {
+      event.preventDefault();
+      moveFocus(event.key === 'ArrowDown' || event.key === 'j' ? 1 : -1);
+      return;
+    }
+    if (event.repeat) return;
+    if (event.key === 'Escape' && selectedThreads.length) {
+      event.preventDefault();
+      setSelectedKeys(new Set());
+      return;
+    }
+    const thread = threads[focusedIndex];
+    const targets = selectedThreads.length ? selectedThreads : thread ? [thread] : [];
+    if (
+      targets.length &&
+      (event.key === MOVE_TO_BIN_KEY || event.key === ARCHIVE_KEY || event.key === STAR_KEY)
+    ) {
+      event.preventDefault();
+      if (event.key === STAR_KEY) starThreads(targets);
+      else moveThreads(targets, event.key === ARCHIVE_KEY ? 'archive' : 'bin');
+    } else if (thread && (event.key === 'x' || event.key === ' ' || event.key === 'Enter')) {
+      // Let native buttons/checkboxes handle Space and Enter when tabbed to directly.
+      if (
+        event.key !== 'x' &&
+        event.target instanceof HTMLElement &&
+        event.target.closest('button,input,a,[role="checkbox"]')
+      )
+        return;
+      event.preventDefault();
+      if (event.key === 'Enter') void openThread(thread);
+      else toggleSelected(thread);
+    }
+  };
+  useHotkeys(
+    [
+      'up',
+      'down',
+      'j',
+      'k',
+      'x',
+      'space',
+      'enter',
+      'escape',
+      MOVE_TO_BIN_KEY,
+      ARCHIVE_KEY,
+      STAR_KEY,
+    ],
+    handleListKey,
+    {
+      enabled: keyboardEnabled,
+      scopes: ['mail-list'],
+      useKey: true,
+    },
+    [handleListKey],
+  );
+
   const showAccountBadge = accounts.size > 1;
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="sticky top-0 z-15 flex items-center justify-between gap-1.5 p-2 pb-0">
+      <div className="z-15 sticky top-0 flex items-center justify-between gap-1.5 p-2 pb-0">
         <div className="w-full">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 md:grid md:grid-cols-[1fr_auto_1fr]">
             <ZenNavigation />
@@ -239,6 +389,92 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
             </div>
             <AccountLegend accounts={[...accounts.values()]} failedIds={failedConnectionIds} />
           </div>
+          <nav
+            aria-label="Inbox views"
+            className="border-border mb-2 flex gap-1 overflow-x-auto border-b"
+          >
+            {(
+              [
+                ['inbox', 'Inbox'],
+                ['all-inbox', 'By date'],
+                ['all-mail', 'All Mail'],
+                ['expenses', 'Expenses'],
+                ['rules', 'Rules'],
+                ['activity', 'Activity'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-current={inboxView === value ? 'page' : undefined}
+                onClick={() => {
+                  void setInboxView(value);
+                  setSelectedKeys(new Set());
+                }}
+                className={cn(
+                  'focus-visible:ring-ring shrink-0 border-b-2 border-transparent px-3 py-2 text-sm focus-visible:ring-2',
+                  inboxView === value
+                    ? 'border-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          {inboxView === 'all-inbox' && selectedThreads.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 px-2 text-sm">
+              <span aria-live="polite">{selectedThreads.length} selected</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
+                    onClick={() => moveThreads(selectedThreads, 'bin')}
+                  >
+                    {m['common.mail.moveToBin']()}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {m['common.mail.moveToBin']()} · {MOVE_TO_BIN_KEY.toUpperCase()}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts="E"
+                    onClick={() => moveThreads(selectedThreads, 'archive')}
+                  >
+                    {m['common.threadDisplay.archive']()}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{m['common.threadDisplay.archive']()} · E</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="hover:bg-muted rounded px-2 py-1"
+                    aria-keyshortcuts="S"
+                    onClick={() => starThreads(selectedThreads)}
+                  >
+                    Star / unstar
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Star / unstar · S</TooltipContent>
+              </Tooltip>
+              <button
+                type="button"
+                className="text-muted-foreground hover:underline"
+                onClick={() => setSelectedKeys(new Set())}
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
           {failedAccounts.length > 0 && (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
               <ExclamationCircle className="h-3.5 w-3.5 shrink-0 fill-amber-500" />
@@ -255,52 +491,68 @@ function UnifiedInboxList({ isDesktop }: { isDesktop: boolean }) {
         </div>
       </div>
 
-      <div className="relative z-1 flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
-        {isLoading ? (
-          <div className="flex flex-col">
-            {Array.from({ length: 8 }, (_, i) => (
-              <RowSkeleton key={i} />
-            ))}
-          </div>
-        ) : query.isError ? (
-          <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
-            <p>{m['common.unifiedInbox.loadFailed']()}</p>
-            <button className="underline" onClick={() => void query.refetch()}>
-              {m['common.unifiedInbox.retry']()}
-            </button>
-          </div>
-        ) : threads.length === 0 ? (
-          <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
-            <EmptyStateIcon width={200} height={200} />
-            <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
-          </div>
-        ) : (
-          <VList
-            ref={vListRef}
-            count={threads.length}
-            overscan={3}
-            itemSize={isDesktop ? 48 : 72}
-            className="scrollbar-none flex-1 overflow-x-hidden"
-            onScroll={maybeLoadMore}
-          >
-            {(index) => {
-              const thread = threads[index];
-              return (
-                <UnifiedThreadRow
-                  key={`${thread.connectionId}:${thread.id}`}
-                  thread={thread}
-                  account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
-                  isSelected={
-                    thread.id === threadId && thread.connectionId === activeConnection?.id
-                  }
-                  isDesktop={isDesktop}
-                  onOpen={openThread}
-                />
-              );
-            }}
-          </VList>
-        )}
-      </div>
+      {inboxView !== 'all-inbox' ? (
+        <IntelligentInbox
+          view={
+            (['inbox', 'all-mail', 'expenses', 'rules', 'activity'].includes(inboxView)
+              ? inboxView
+              : 'inbox') as IntelligenceView
+          }
+          onOpen={openThread}
+          enabled={!threadId && !isCommandPaletteOpen && !isComposeOpen}
+        />
+      ) : (
+        <div className="z-1 relative flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+          {isLoading ? (
+            <div className="flex flex-col">
+              {Array.from({ length: 8 }, (_, i) => (
+                <RowSkeleton key={i} />
+              ))}
+            </div>
+          ) : query.isError ? (
+            <div className="text-muted-foreground flex h-32 flex-col items-center justify-center gap-2 text-sm">
+              <p>{m['common.unifiedInbox.loadFailed']()}</p>
+              <button className="underline" onClick={() => void query.refetch()}>
+                {m['common.unifiedInbox.retry']()}
+              </button>
+            </div>
+          ) : threads.length === 0 ? (
+            <div className="flex w-full flex-1 flex-col items-center justify-center gap-2 text-center">
+              <EmptyStateIcon width={200} height={200} />
+              <p className="mt-5 text-lg">{m['common.unifiedInbox.empty']()}</p>
+            </div>
+          ) : (
+            <VList
+              ref={vListRef}
+              count={threads.length}
+              overscan={3}
+              itemSize={isDesktop ? 48 : 72}
+              className="scrollbar-none flex-1 overflow-x-hidden"
+              onScroll={maybeLoadMore}
+            >
+              {(index) => {
+                const thread = threads[index];
+                return (
+                  <UnifiedThreadRow
+                    key={`${thread.connectionId}:${thread.id}`}
+                    thread={thread}
+                    account={showAccountBadge ? accounts.get(thread.connectionId) : undefined}
+                    isSelected={
+                      thread.id === threadId && thread.connectionId === activeConnection?.id
+                    }
+                    isDesktop={isDesktop}
+                    onOpen={openThread}
+                    isFocused={rowKey(thread) === focusedKey}
+                    isChecked={selectedKeys.has(rowKey(thread))}
+                    onFocusThread={setFocusedKey}
+                    onToggleSelected={toggleSelected}
+                  />
+                );
+              }}
+            </VList>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -348,6 +600,10 @@ type UnifiedThreadRowProps = {
   isSelected: boolean;
   isDesktop: boolean;
   onOpen: (thread: UnifiedThread) => Promise<void>;
+  isFocused: boolean;
+  isChecked: boolean;
+  onFocusThread: (key: string) => void;
+  onToggleSelected: (thread: UnifiedThread) => void;
 };
 
 const UnifiedThreadRow = memo(function UnifiedThreadRow({
@@ -356,6 +612,10 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   isSelected,
   isDesktop,
   onOpen,
+  isFocused,
+  isChecked,
+  onFocusThread,
+  onToggleSelected,
 }: UnifiedThreadRowProps) {
   const summary = thread.summary;
   const latest = summary?.latest;
@@ -364,12 +624,16 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   const optimistic = useOptimisticThreadState(thread.id);
   const [pending, setPending] = useState(false);
 
+  if (optimistic.optimisticDestination === 'bin' || optimistic.optimisticDestination === 'archive')
+    return null;
   if (!summary || !latest) {
     return <RowSkeleton />;
   }
 
   const unread =
     optimistic.optimisticRead !== null ? !optimistic.optimisticRead : summary.hasUnread;
+  const starred =
+    optimistic.optimisticStarred ?? latest.tags?.some((tag) => tag.name === 'STARRED');
   const senderName = latest.sender?.name?.trim().replace(/^['"]|['"]$/g, '') || '';
   const senderText = senderName || latest.sender?.email || '';
   const date = latest.receivedOn ? formatListDate(latest.receivedOn.split('.')[0] || '') : null;
@@ -409,14 +673,30 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
   );
 
   return (
-    <div className="my-1 select-none">
+    <div
+      className={cn(
+        'mx-1 my-1 flex select-none items-center rounded-lg',
+        isChecked && 'bg-muted',
+        isFocused && 'ring-ring ring-1 ring-inset',
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={isChecked}
+        className="ml-3 size-4 shrink-0 cursor-pointer"
+        aria-label={`Select ${latest.subject || 'thread'}`}
+        onFocus={() => onFocusThread(rowKey(thread))}
+        onChange={() => onToggleSelected(thread)}
+      />
       <button
         type="button"
+        onFocus={() => onFocusThread(rowKey(thread))}
         onClick={handleClick}
+        aria-keyshortcuts="D E S"
         disabled={pending}
         aria-current={isSelected ? 'true' : undefined}
         className={cn(
-          'hover:bg-offsetLight dark:hover:bg-primary/5 mx-1 flex w-[calc(100%-0.5rem)] cursor-pointer items-center rounded-lg py-2 text-left',
+          'hover:bg-offsetLight dark:hover:bg-primary/5 flex min-w-0 flex-1 cursor-pointer items-center rounded-lg py-2 text-left',
           isSelected && 'bg-offsetLight dark:bg-primary/5',
           pending && 'opacity-60',
         )}
@@ -445,6 +725,12 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
               <span className={cn('truncate text-sm', unread && 'font-medium')}>
                 {latest.subject}
               </span>
+              {starred && (
+                <Star
+                  aria-label="Starred"
+                  className="size-3.5 shrink-0 fill-yellow-400 text-yellow-500"
+                />
+              )}
               {summary.totalReplies > 1 && (
                 <span className="text-muted-foreground shrink-0 text-xs">
                   {summary.totalReplies}
@@ -475,6 +761,12 @@ const UnifiedThreadRow = memo(function UnifiedThreadRow({
                   )}
                 >
                   <span className="truncate">{senderText}</span>
+                  {starred && (
+                    <Star
+                      aria-label="Starred"
+                      className="size-3.5 shrink-0 fill-yellow-400 text-yellow-500"
+                    />
+                  )}
                   {unread && <span className="size-2 shrink-0 rounded-full bg-[#006FFE]" />}
                 </span>
                 {date !== null && (

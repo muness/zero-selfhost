@@ -16,6 +16,7 @@ export const useUnifiedInbox = () => {
         initialCursor: '',
         getNextPageParam: (lastPage) => lastPage?.nextPageToken || null,
         staleTime: 60 * 1000,
+        refetchInterval: 60 * 1000,
         refetchOnMount: true,
         refetchOnWindowFocus: true,
       },

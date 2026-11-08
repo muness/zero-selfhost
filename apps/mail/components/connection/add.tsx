@@ -39,6 +39,22 @@ export const AddConnectionDialog = ({
     return (connections?.unlimited && !connections?.remaining) || (connections?.remaining ?? 0) > 0;
   }, [connections]);
   const pathname = useLocation().pathname;
+  const { data: providers } = useQuery({
+    queryKey: ['mailbox-providers'],
+    queryFn: async () => {
+      const response = await fetch(
+        import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers',
+      );
+      if (!response.ok) throw new Error('Could not load mailbox providers');
+      const { allProviders } = (await response.json()) as {
+        allProviders: { id: string; enabled: boolean }[];
+      };
+      return allProviders;
+    },
+  });
+  const availableProviders = emailProviders.filter((provider) =>
+    providers?.some(({ id, enabled }) => id === provider.providerId && enabled),
+  );
   const trpc = useTRPC();
   const { data: imapAvailability } = useQuery(trpc.connections.imap.enabled.queryOptions());
   // Shown unless the server explicitly reports IMAP as disabled (it enforces the flag too).
@@ -139,7 +155,7 @@ export const AddConnectionDialog = ({
             animate={{ opacity: 1 }}
             transition={{ duration: 0.3 }}
           >
-            {emailProviders.map((provider, index) => {
+            {availableProviders.map((provider, index) => {
               const Icon = provider.icon;
               return (
                 <motion.div
@@ -175,7 +191,7 @@ export const AddConnectionDialog = ({
                     key={item.id}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: (emailProviders.length + index) * 0.1, duration: 0.3 }}
+                    transition={{ delay: (availableProviders.length + index) * 0.1, duration: 0.3 }}
                     whileHover={{ scale: 1.03 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -195,7 +211,7 @@ export const AddConnectionDialog = ({
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{
-                delay: (emailProviders.length + (imapEnabled ? IMAP_PRESETS.length : 0)) * 0.1,
+                delay: (availableProviders.length + (imapEnabled ? IMAP_PRESETS.length : 0)) * 0.1,
                 duration: 0.3,
               }}
               whileHover={{ scale: 1.03 }}

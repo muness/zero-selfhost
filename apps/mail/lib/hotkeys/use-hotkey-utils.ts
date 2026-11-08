@@ -1,8 +1,13 @@
 // TODO: Implement shortcuts syncing and caching
-import { type Shortcut, keyboardShortcuts, enhancedKeyboardShortcuts } from '@/config/shortcuts';
+import {
+  MOVE_TO_BIN_KEY,
+  type Shortcut,
+  keyboardShortcuts,
+  enhancedKeyboardShortcuts,
+} from '@/config/shortcuts';
 import { keyboardLayoutMapper, type KeyboardLayout } from '@/utils/keyboard-layout-map';
+import { isHotkeyPressed, useHotkeys } from 'react-hotkeys-hook';
 import { getKeyCodeFromKey } from '@/utils/keyboard-utils';
-import { useHotkeys } from 'react-hotkeys-hook';
 import { useCallback, useMemo } from 'react';
 
 export const useShortcutCache = () => {
@@ -105,6 +110,7 @@ export const formatKeys = (keys: string[] | undefined): string => {
 
   const mapKey = (key: string) => {
     const lowerKey = key.toLowerCase();
+    if (lowerKey === 'delete') return lowerKey;
 
     // Use enhanced keyboard layout mapping
     const detectedLayout = keyboardLayoutMapper.getDetectedLayout();
@@ -281,7 +287,7 @@ export function useShortcuts(
 ) {
   const shortcutMap = useMemo(() => {
     return shortcuts.reduce<Record<string, Shortcut>>((acc, shortcut) => {
-      if (handlers[shortcut.action]) {
+      if (shortcut.action !== 'moveToBin' && handlers[shortcut.action]) {
         acc[shortcut.action] = shortcut;
       }
       return acc;
@@ -299,6 +305,35 @@ export function useShortcuts(
       .filter(Boolean)
       .join(',');
   }, [shortcutMap, handlers]);
+
+  useHotkeys(
+    MOVE_TO_BIN_KEY,
+    (event) => {
+      // Leave G+D to the existing Go to Drafts shortcut.
+      if (
+        event.key !== MOVE_TO_BIN_KEY ||
+        event.defaultPrevented ||
+        event.repeat ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isHotkeyPressed('g')
+      )
+        return;
+      event.preventDefault();
+      handlers.moveToBin?.();
+    },
+    {
+      ...options,
+      enabled:
+        shortcuts.some((shortcut) => shortcut.action === 'moveToBin') && !!handlers.moveToBin,
+      scopes: options.scope ? [options.scope] : undefined,
+      useKey: true,
+    },
+    [handlers],
+  );
 
   useHotkeys(
     shortcutString,

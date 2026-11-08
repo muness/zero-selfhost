@@ -13,6 +13,10 @@ export const shortcutSchema = z.object({
 });
 
 export type Shortcut = z.infer<typeof shortcutSchema>;
+export const MOVE_TO_BIN_KEY = 'd';
+export const ARCHIVE_KEY = 'e';
+export const STAR_KEY = 's';
+
 export type ShortcutType = Shortcut['type'];
 
 /**
@@ -47,6 +51,8 @@ export function getDisplayKeysForShortcut(shortcut: Shortcut): string[] {
         return 'Esc';
       case 'backspace':
         return '⌫';
+      case 'delete':
+        return 'Delete';
       case 'enter':
         return '↵';
       case 'space':
@@ -120,6 +126,28 @@ const threadDisplayShortcuts: Shortcut[] = [
     type: 'single',
     description: 'Move to Bin',
     scope: 'thread-display',
+  },
+  {
+    keys: [ARCHIVE_KEY],
+    action: 'archiveEmail',
+    type: 'single',
+    description: 'Archive email',
+    scope: 'thread-display',
+  },
+  {
+    keys: [STAR_KEY],
+    action: 'toggleStar',
+    type: 'single',
+    description: 'Star or unstar email',
+    scope: 'thread-display',
+  },
+  {
+    keys: [MOVE_TO_BIN_KEY],
+    action: 'moveToBin',
+    type: 'single',
+    description: 'Move to Bin',
+    scope: 'thread-display',
+    preventDefault: true,
   },
 ];
 
@@ -253,11 +281,12 @@ const mailListShortcuts: Shortcut[] = [
     scope: 'mail-list',
   },
   {
-    keys: ['d'],
-    action: 'bulkDelete',
+    keys: [MOVE_TO_BIN_KEY],
+    action: 'moveToBin',
     type: 'single',
-    description: 'Bulk delete',
+    description: 'Move to Bin',
     scope: 'mail-list',
+    preventDefault: true,
   },
   {
     keys: ['s'],

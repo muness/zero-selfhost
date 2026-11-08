@@ -158,6 +158,7 @@ export function useOptimisticActions() {
             queryClient.invalidateQueries({
               queryKey: trpc.mail.listUnifiedInbox.infiniteQueryKey(),
             }),
+            queryClient.invalidateQueries({ queryKey: trpc.intelligentInbox.pathKey() }),
           ]);
         }
         const settled = optimisticActionsManager.settleAction(pendingActionId);
@@ -259,7 +260,7 @@ export function useOptimisticActions() {
   }
 
   const optimisticToggleStar = useCallback(
-    (threadIds: string[], starred: boolean) => {
+    (threadIds: string[], starred: boolean, connectionId?: string) => {
       if (!threadIds.length) return;
 
       const optimisticId = addOptimisticAction({
@@ -274,7 +275,8 @@ export function useOptimisticActions() {
         params: { starred },
         optimisticId,
         execute: async () => {
-          await toggleStar({ ids: threadIds, starred });
+          const result = await toggleStar({ ids: threadIds, starred, connectionId });
+          if (!result.success) throw new Error('Could not update stars');
         },
         undo: () => {
           removeOptimisticAction(optimisticId);
@@ -291,6 +293,7 @@ export function useOptimisticActions() {
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
+    connectionId?: string,
   ) {
     if (!threadIds.length || !destination) return;
 
@@ -329,6 +332,7 @@ export function useOptimisticActions() {
           threadIds,
           currentFolder,
           destination,
+          connectionId,
         });
 
         if (mail.bulkSelected.length > 0) {

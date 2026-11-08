@@ -1,6 +1,8 @@
 import { IMAP_TOKEN_MARKER, isConnectionActive } from './connection-status';
+import { GOA_MAIL_SCOPE, goaMailToken } from './goa-mail-token';
 import type { ImapManagerSettings } from './driver/types';
 import { connection, connectionImap } from '../db/schema';
+import { graphAccessToken } from './graph-access-token';
 import type { DriverRpcDO } from '../routes/agent/rpc';
 import type { LabelStorage } from './mail-label-store';
 import { disposeRpc, scopedRpc } from './scoped-rpc';
@@ -95,6 +97,10 @@ export const imapSettingsFromRow = (
   },
   authMethod: row.authMethod,
   oauthProvider: row.oauthProvider,
+  getAccessToken:
+    activeConnection.scope === GOA_MAIL_SCOPE
+      ? () => goaMailToken(activeConnection.email, 'google')
+      : undefined,
   secret: { ciphertext: row.encryptedSecret, iv: row.iv, keyVersion: row.keyVersion },
   accessToken:
     row.authMethod === 'xoauth2' && activeConnection.accessToken !== IMAP_TOKEN_MARKER
@@ -121,6 +127,12 @@ export const connectionToDriver = (
       accessToken: activeConnection.accessToken!,
       refreshToken: activeConnection.refreshToken!,
       email: activeConnection.email,
+      getAccessToken:
+        activeConnection.providerId !== 'microsoft'
+          ? undefined
+          : activeConnection.scope === GOA_MAIL_SCOPE
+            ? async () => (await goaMailToken(activeConnection.email, 'ms_graph')).accessToken
+            : () => graphAccessToken(activeConnection.id),
     },
     imap: extras.imap,
     storage: extras.storage,

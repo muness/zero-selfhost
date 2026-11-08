@@ -20,6 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { ARCHIVE_KEY, MOVE_TO_BIN_KEY, STAR_KEY } from '@/config/shortcuts';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 
 import {
@@ -36,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { focusedIndexAtom, mailNavigationCommandAtom } from '@/hooks/use-mail-navigation';
 import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { useHotkeys } from 'react-hotkeys-hook';
+import { isHotkeyPressed, useHotkeys } from 'react-hotkeys-hook';
 
 import { loadReplyComposer, ThreadDraftCard, useThreadDraftTimeline } from './thread-draft-card';
 import { type ThreadDestination } from '@/lib/thread-actions';
@@ -371,10 +372,19 @@ export function ThreadDisplay() {
       setActiveReplyId(null);
       setDraftId(null);
 
-      optimisticMoveThreadsTo([id], folder, destination);
+      optimisticMoveThreadsTo([id], folder, destination, emailData?.latest?.connectionId);
       handleNext();
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, setMode, setActiveReplyId, setDraftId],
+    [
+      id,
+      folder,
+      optimisticMoveThreadsTo,
+      handleNext,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      emailData?.latest?.connectionId,
+    ],
   );
 
   const { optimisticToggleStar } = useOptimisticActions();
@@ -383,8 +393,26 @@ export function ThreadDisplay() {
     if (!emailData || !id) return;
 
     const newStarredState = !isStarred;
-    optimisticToggleStar([id], newStarredState);
+    optimisticToggleStar([id], newStarredState, emailData.latest?.connectionId);
   }, [emailData, id, isStarred, optimisticToggleStar]);
+
+  useHotkeys(
+    [STAR_KEY, ARCHIVE_KEY],
+    (event) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || isHotkeyPressed('g'))
+        return;
+      if (event.key === ARCHIVE_KEY && (isInArchive || isInBin || isInSpam)) return;
+      event.preventDefault();
+      if (event.key === STAR_KEY) void handleToggleStar();
+      else void moveThreadTo('archive');
+    },
+    {
+      scopes: ['thread-display'],
+      enabled: threadHotkeysEnabled && !!emailData && !activeReplyId,
+      useKey: true,
+    },
+    [handleToggleStar, moveThreadTo, isInArchive, isInBin, isInSpam],
+  );
 
   const printThread = () => {
     try {
@@ -875,7 +903,7 @@ export function ThreadDisplay() {
               icon={X}
               label={m['common.actions.close']()}
               onClick={handleClose}
-              className="absolute top-2 left-2 z-20 h-7 w-7"
+              className="absolute left-2 top-2 z-20 h-7 w-7"
             />
             <MailLoadError
               unavailable={loadState === 'unavailable'}
@@ -888,7 +916,7 @@ export function ThreadDisplay() {
               icon={X}
               label={m['common.actions.close']()}
               onClick={handleClose}
-              className="absolute top-2 left-2 z-20 h-7 w-7"
+              className="absolute left-2 top-2 z-20 h-7 w-7"
             />
             <ScrollArea className="h-full flex-1" type="auto">
               <div className="pb-4">
@@ -900,7 +928,7 @@ export function ThreadDisplay() {
           <>
             <div
               className={cn(
-                'flex shrink-0 items-center px-1 pb-[10px] md:absolute md:top-2 md:left-2 md:z-20 md:flex-col md:gap-1 md:p-0',
+                'flex shrink-0 items-center px-1 pb-[10px] md:absolute md:left-2 md:top-2 md:z-20 md:flex-col md:gap-1 md:p-0',
                 isMobile && 'bg-panelLight dark:bg-panelDark sticky top-0 z-10 mt-2',
               )}
             >
@@ -989,8 +1017,8 @@ export function ThreadDisplay() {
                   className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 md:w-7 md:px-0 dark:border-none dark:bg-[#313131]"
                 >
                   <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                  <div className="flex items-center justify-center gap-2.5 pr-1 pl-0.5 md:sr-only">
-                    <div className="justify-start text-sm leading-none whitespace-nowrap text-black dark:text-white">
+                  <div className="flex items-center justify-center gap-2.5 pl-0.5 pr-1 md:sr-only">
+                    <div className="justify-start whitespace-nowrap text-sm leading-none text-black dark:text-white">
                       {m['common.threadDisplay.replyAll']()}
                     </div>
                   </div>
@@ -1007,11 +1035,12 @@ export function ThreadDisplay() {
                             : m['common.threadDisplay.star']()
                         }
                         aria-pressed={isStarred}
+                        aria-keyshortcuts="S"
                         className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131]"
                       >
                         <Star
                           className={cn(
-                            'mt-[2.4px] ml-[2px] h-5 w-5',
+                            'ml-[2px] mt-[2.4px] h-5 w-5',
                             isStarred
                               ? 'fill-yellow-400 stroke-yellow-400'
                               : 'fill-transparent stroke-[#9D9D9D] dark:stroke-[#9D9D9D]',
@@ -1022,7 +1051,8 @@ export function ThreadDisplay() {
                     <TooltipContent side="bottom" className="bg-white dark:bg-[#313131]">
                       {isStarred
                         ? m['common.threadDisplay.unstar']()
-                        : m['common.threadDisplay.star']()}
+                        : m['common.threadDisplay.star']()}{' '}
+                      <kbd className="ml-1 font-mono">S</kbd>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -1033,13 +1063,14 @@ export function ThreadDisplay() {
                       <button
                         onClick={() => moveThreadTo('archive')}
                         aria-label={m['common.threadDisplay.archive']()}
+                        aria-keyshortcuts="E"
                         className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white dark:bg-[#313131]"
                       >
                         <Archive className="fill-iconLight dark:fill-iconDark" />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="bg-white dark:bg-[#313131]">
-                      {m['common.threadDisplay.archive']()}
+                      {m['common.threadDisplay.archive']()} <kbd className="ml-1 font-mono">E</kbd>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -1051,13 +1082,19 @@ export function ThreadDisplay() {
                         <button
                           onClick={() => moveThreadTo('bin')}
                           aria-label={m['common.mail.moveToBin']()}
+                          aria-keyshortcuts={MOVE_TO_BIN_KEY.toUpperCase()}
                           className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg border border-[#FCCDD5] bg-[#FDE4E9] dark:border-[#6E2532] dark:bg-[#411D23]"
                         >
                           <Trash className="fill-[#F43F5E]" />
                         </button>
                       </TooltipTrigger>
                       <TooltipContent side="bottom" className="bg-white dark:bg-[#313131]">
-                        {m['common.mail.moveToBin']()}
+                        <span className="inline-flex items-center gap-2">
+                          {m['common.mail.moveToBin']()}
+                          <kbd className="rounded border border-current px-1 text-xs">
+                            {MOVE_TO_BIN_KEY.toUpperCase()}
+                          </kbd>
+                        </span>
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
@@ -1067,7 +1104,7 @@ export function ThreadDisplay() {
                   <DropdownMenuTrigger asChild>
                     <button
                       aria-label="More actions"
-                      className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white focus:ring-0 focus:outline-none dark:bg-[#313131]"
+                      className="inline-flex h-7 w-7 items-center justify-center gap-1 overflow-hidden rounded-lg bg-white focus:outline-none focus:ring-0 dark:bg-[#313131]"
                     >
                       <ThreeDots className="fill-iconLight dark:fill-iconDark" />
                     </button>
@@ -1191,7 +1228,7 @@ export function ThreadDisplay() {
                 activeReplyId &&
                 activeReplyId === emailData.messages[emailData.messages.length - 1]?.id && (
                   <div
-                    className="flex max-h-[60%] min-h-0 shrink-0 flex-col px-2 pt-2 pb-3 md:px-0"
+                    className="flex max-h-[60%] min-h-0 shrink-0 flex-col px-2 pb-3 pt-2 md:px-0"
                     id={`reply-composer-${activeReplyId}`}
                   >
                     <ReplyCompose messageId={activeReplyId} />

@@ -142,20 +142,6 @@ export const imapConnectionsRouter = router({
           message: 'This address is already connected with another provider',
         });
 
-      if (!existing) {
-        try {
-          const check = await ctx.autumn.check({
-            customer_id: sessionUser.id,
-            feature_id: 'connections',
-          });
-          if (check.data && check.data.allowed === false)
-            throw new TRPCError({ code: 'FORBIDDEN', message: 'Connection limit reached' });
-        } catch (error) {
-          if (error instanceof TRPCError) throw error;
-          // Billing unavailable: the client enforces the limit too.
-        }
-      }
-
       const capabilities = await testOrThrow(input);
       const id = existing?.id ?? crypto.randomUUID();
       const secret = await cipher().encrypt(input.password, id);
